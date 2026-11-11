@@ -1,0 +1,267 @@
+import type { DatabaseSync } from 'node:sqlite';
+import zlib from 'node:zlib';
+import { BlockedError, Fetcher } from './browser.ts';
+import { nowIso, tx } from './db.ts';
+import {
+  EVENTS_LIST_URL, FIGHTER_LIST_URLS, UPCOMING_LIST_URL, eventUrl, fightUrl, fighterUrl, kindOf,
+  parseEvent, parseEventsList, parseFight, parseFighter, parseFighterList, STAT_FIELDS, type PageKind,
+} from './parse.ts';
+
+export type Mode = 'full' | 'weekly' | 'sample';
+
+export interface CrawlOptions {
+  mode: Mode;
+  /** sample mode: how many of the newest events to take */
+  sampleEvents?: number;
+  /** weekly mode: ignore listed events older than this date (used for sample databases) */
+  since?: string;
+  maxPages?: number;
+  log?: (msg: string) => void;
+}
+
+const PRIORITY: Record<PageKind, number> = {
+  events_list: 0, upcoming_list: 0, fighter_list: 1, event: 2, fight: 3, fighter: 4,
+};
+const MAX_ATTEMPTS = 3;
+const MAX_FAILURES_IN_A_ROW = 5;
+
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+export function enqueue(db: DatabaseSync, url: string, force = false): void {
+  const kind = kindOf(url);
+  if (force) {
+    db.prepare(
+      `INSERT INTO pages (url, kind, status) VALUES (?, ?, 'pending')
+       ON CONFLICT(url) DO UPDATE SET status = 'pending', attempts = 0, last_error = NULL`,
+    ).run(url, kind);
+  } else {
+    db.prepare(`INSERT OR IGNORE INTO pages (url, kind, status) VALUES (?, ?, 'pending')`).run(url, kind);
+  }
+}
+
+/** Parse a fetched page into the tables and queue the pages it links to. */
+export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlOptions): void {
+  const kind = kindOf(url);
+  const now = nowIso();
+  const id = url.split('/').pop()!;
+
+  if (kind === 'events_list') {
+    let listed = parseEventsList(html).filter((e) => !e.date || e.date <= today());
+    if (opts.mode === 'sample') listed = listed.slice(0, opts.sampleEvents ?? 4);
+    if (opts.since) listed = listed.filter((e) => e.date && e.date >= opts.since!);
+    for (const e of listed) {
+      db.prepare(
+        `INSERT INTO events (id, name, date, location, first_seen_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, date = excluded.date, location = excluded.location`,
+      ).run(e.id, e.name, e.date, e.location, now);
+      enqueue(db, eventUrl(e.id));
+    }
+    return;
+  }
+
+  if (kind === 'upcoming_list') {
+    db.exec('DELETE FROM upcoming_events');
+    for (const e of parseEventsList(html)) {
+      db.prepare(`INSERT OR REPLACE INTO upcoming_events (id, name, date, location, seen_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(e.id, e.name, e.date, e.location, now);
+    }
+    return;
+  }
+
+  if (kind === 'fighter_list') {
+    for (const f of parseFighterList(html)) {
+      const known = db.prepare('SELECT 1 FROM fighters WHERE id = ?').get(f.id);
+      if (!known && opts.mode !== 'full') continue;
+      db.prepare(
+        `INSERT INTO fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
+           nickname = COALESCE(excluded.nickname, fighters.nickname), is_champion = excluded.is_champion`,
+      ).run(f.id, f.first_name, f.last_name, f.nickname, f.is_champion ? 1 : 0);
+      if (opts.mode === 'full') enqueue(db, fighterUrl(f.id));
+    }
+    return;
+  }
+
+  if (kind === 'event') {
+    const e = parseEvent(id, html);
+    const complete = e.fights.length > 0 && e.fights.every((f) => f.flags.length > 0);
+    db.prepare(
+      `INSERT INTO events (id, name, date, location, complete, first_seen_at, scraped_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, date = excluded.date, location = excluded.location,
+         complete = excluded.complete, scraped_at = excluded.scraped_at`,
+    ).run(e.id, e.name, e.date, e.location, complete ? 1 : 0, now, now);
+    for (const f of e.fights) {
+      db.prepare(
+        `INSERT INTO fights (id, event_id, bout_order, fighter1_id, fighter2_id, fighter1_name, fighter2_name,
+           weight_class, bonuses, method_short, method_detail, round, time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET event_id = excluded.event_id, bout_order = excluded.bout_order,
+           weight_class = excluded.weight_class, bonuses = excluded.bonuses, method_short = excluded.method_short,
+           method_detail = excluded.method_detail, round = COALESCE(fights.round, excluded.round),
+           time = COALESCE(fights.time, excluded.time)`,
+      ).run(f.id, e.id, f.bout_order, f.fighter1_id, f.fighter2_id, f.fighter1_name, f.fighter2_name,
+        f.weight_class, JSON.stringify(f.bonuses), f.method, f.method_detail, f.round, f.time);
+      // A fight without a result yet is fetched again when its event is retried.
+      enqueue(db, fightUrl(f.id), f.flags.length === 0);
+    }
+    return;
+  }
+
+  if (kind === 'fight') {
+    const f = parseFight(id, html);
+    const before = db.prepare('SELECT page_scraped_at FROM fights WHERE id = ?').get(id) as
+      | { page_scraped_at: string | null } | undefined;
+    const [a, b] = f.fighters;
+    db.prepare(
+      `INSERT INTO fights (id, event_id, fighter1_id, fighter2_id, fighter1_name, fighter2_name, fighter1_nickname,
+         fighter2_nickname, fighter1_result, fighter2_result, bout, title_bout, method, details, round, time,
+         time_format, referee, page_scraped_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET fighter1_id = excluded.fighter1_id, fighter2_id = excluded.fighter2_id,
+         fighter1_name = excluded.fighter1_name, fighter2_name = excluded.fighter2_name,
+         fighter1_nickname = excluded.fighter1_nickname, fighter2_nickname = excluded.fighter2_nickname,
+         fighter1_result = excluded.fighter1_result, fighter2_result = excluded.fighter2_result,
+         bout = excluded.bout, title_bout = excluded.title_bout, method = excluded.method, details = excluded.details,
+         round = excluded.round, time = excluded.time, time_format = excluded.time_format, referee = excluded.referee,
+         page_scraped_at = excluded.page_scraped_at`,
+    ).run(id, f.event_id ?? '', a?.id ?? null, b?.id ?? null, a?.name ?? null, b?.name ?? null,
+      a?.nickname ?? null, b?.nickname ?? null, a?.result ?? null, b?.result ?? null, f.bout, f.title_bout ? 1 : 0,
+      f.method, f.details, f.round, f.time, f.time_format, f.referee, now);
+    db.prepare('DELETE FROM fight_stats WHERE fight_id = ?').run(id);
+    const cols = ['fight_id', 'fighter_id', 'round', ...STAT_FIELDS];
+    const ins = db.prepare(`INSERT INTO fight_stats (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
+    for (const s of f.stats) ins.run(id, s.fighter_id, s.round, ...STAT_FIELDS.map((k) => s[k]));
+    // A fighter who just fought has a new record and new career stats.
+    const firstTime = !before?.page_scraped_at;
+    for (const p of f.fighters) {
+      if (!p.id) continue;
+      db.prepare('INSERT OR IGNORE INTO fighters (id, name) VALUES (?, ?)').run(p.id, p.name);
+      enqueue(db, fighterUrl(p.id), firstTime && opts.mode !== 'full');
+    }
+    return;
+  }
+
+  if (kind === 'fighter') {
+    const p = parseFighter(id, html);
+    db.prepare(
+      `INSERT INTO fighters (id, name, nickname, record, wins, losses, draws, no_contests, height, height_inches,
+         weight, weight_lbs, reach, reach_inches, stance, dob, slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def,
+         sub_avg, profile_scraped_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, nickname = excluded.nickname, record = excluded.record,
+         wins = excluded.wins, losses = excluded.losses, draws = excluded.draws, no_contests = excluded.no_contests,
+         height = excluded.height, height_inches = excluded.height_inches, weight = excluded.weight,
+         weight_lbs = excluded.weight_lbs, reach = excluded.reach, reach_inches = excluded.reach_inches,
+         stance = excluded.stance, dob = excluded.dob, slpm = excluded.slpm, str_acc = excluded.str_acc,
+         sapm = excluded.sapm, str_def = excluded.str_def, td_avg = excluded.td_avg, td_acc = excluded.td_acc,
+         td_def = excluded.td_def, sub_avg = excluded.sub_avg, profile_scraped_at = excluded.profile_scraped_at`,
+    ).run(p.id, p.name, p.nickname, p.record, p.wins, p.losses, p.draws, p.no_contests, p.height, p.height_inches,
+      p.weight, p.weight_lbs, p.reach, p.reach_inches, p.stance, p.dob, p.slpm, p.str_acc, p.sapm, p.str_def,
+      p.td_avg, p.td_acc, p.td_def, p.sub_avg, now);
+  }
+}
+
+function nextPending(db: DatabaseSync): { url: string; kind: PageKind; attempts: number } | undefined {
+  return db.prepare(
+    `SELECT url, kind, attempts FROM pages WHERE status = 'pending'
+     ORDER BY attempts, CASE kind WHEN 'events_list' THEN 0 WHEN 'upcoming_list' THEN 0 WHEN 'fighter_list' THEN 1
+       WHEN 'event' THEN 2 WHEN 'fight' THEN 3 ELSE 4 END, url LIMIT 1`,
+  ).get() as { url: string; kind: PageKind; attempts: number } | undefined;
+}
+
+/** Fetch every pending page, one at a time. Returns the number of pages fetched. Throws BlockedError to stop. */
+export async function drain(db: DatabaseSync, opts: CrawlOptions): Promise<number> {
+  const log = opts.log ?? console.log;
+  if (!nextPending(db)) return 0;
+  const fetcher = new Fetcher();
+  await fetcher.open();
+  let fetched = 0;
+  let failuresInARow = 0;
+  let stopping = false;
+  const stop = (sig: string) => {
+    log(`${sig} received; finishing the current page and stopping`);
+    stopping = true;
+  };
+  const onTerm = () => stop('SIGTERM');
+  const onInt = () => stop('SIGINT');
+  process.on('SIGTERM', onTerm);
+  process.on('SIGINT', onInt);
+  try {
+    for (;;) {
+      if (stopping) break;
+      if (opts.maxPages !== undefined && fetched >= opts.maxPages) break;
+      const next = nextPending(db);
+      if (!next) break;
+      try {
+        const html = await fetcher.get(next.url);
+        tx(db, () => {
+          db.prepare('INSERT OR REPLACE INTO raw_pages (url, fetched_at, html_gz) VALUES (?, ?, ?)')
+            .run(next.url, nowIso(), zlib.gzipSync(html));
+          ingest(db, next.url, html, opts);
+          db.prepare(`UPDATE pages SET status = 'done', fetched_at = ?, last_error = NULL WHERE url = ?`)
+            .run(nowIso(), next.url);
+        });
+        fetched++;
+        failuresInARow = 0;
+        if (fetched % 50 === 0) log(`fetched ${fetched} pages (last: ${next.url})`);
+      } catch (e) {
+        if (e instanceof BlockedError) throw e;
+        failuresInARow++;
+        const attempts = next.attempts + 1;
+        db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
+          .run(attempts, String((e as Error).message).slice(0, 500), attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
+        log(`error on ${next.url}: ${(e as Error).message}`);
+        if (failuresInARow >= MAX_FAILURES_IN_A_ROW) {
+          throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${(e as Error).message})`);
+        }
+      }
+    }
+  } finally {
+    process.off('SIGTERM', onTerm);
+    process.off('SIGINT', onInt);
+    await fetcher.close();
+  }
+  return fetched;
+}
+
+/** Re-run the parsers over every stored page, without touching ufcstats. */
+export function reparse(db: DatabaseSync, opts: CrawlOptions): number {
+  const rows = db.prepare('SELECT url, html_gz FROM raw_pages').all() as { url: string; html_gz: Uint8Array }[];
+  const order = (u: string) => PRIORITY[kindOf(u)];
+  rows.sort((a, b) => order(a.url) - order(b.url));
+  tx(db, () => {
+    for (const r of rows) ingest(db, r.url, zlib.gunzipSync(r.html_gz).toString('utf8'), opts);
+  });
+  return rows.length;
+}
+
+/** Queue what this kind of run needs. */
+export function seed(db: DatabaseSync, opts: CrawlOptions): void {
+  enqueue(db, EVENTS_LIST_URL, true);
+  if (opts.mode === 'sample') return;
+  enqueue(db, UPCOMING_LIST_URL, true);
+  for (const u of FIGHTER_LIST_URLS) enqueue(db, u, opts.mode === 'weekly');
+  if (opts.mode !== 'weekly') return;
+  for (const f of db.prepare('SELECT url FROM flags').all() as { url: string }[]) enqueue(db, f.url, true);
+  db.exec('DELETE FROM flags');
+  for (const e of db.prepare('SELECT id FROM events WHERE complete = 0').all() as { id: string }[]) {
+    enqueue(db, eventUrl(e.id), true);
+  }
+}
+
+/** Events ufcstats still lists as upcoming although their date has passed: results not published yet. */
+export function unpublished(db: DatabaseSync): { id: string; name: string; date: string }[] {
+  return db.prepare(
+    `SELECT u.id, u.name, u.date FROM upcoming_events u LEFT JOIN events e ON e.id = u.id
+     WHERE u.date < ? AND (e.id IS NULL OR e.complete = 0)`,
+  ).all(today()) as { id: string; name: string; date: string }[];
+}
+
+export function status(db: DatabaseSync) {
+  const rows = db.prepare('SELECT kind, status, COUNT(*) n FROM pages GROUP BY kind, status').all() as
+    { kind: string; status: string; n: number }[];
+  const by = (s: string) => rows.filter((r) => r.status === s).reduce((t, r) => t + r.n, 0);
+  return { rows, done: by('done'), pending: by('pending'), failed: by('failed') };
+}
+
+export { BlockedError };

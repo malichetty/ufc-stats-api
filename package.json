@@ -1,0 +1,26 @@
+{
+  "name": "ufc-stats-api",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.0",
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "cheerio": "1.1.2",
+    "playwright": "1.65.0",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
+  },
+  "scripts": {
+    "crawl": "node --no-warnings scraper/cli.ts crawl",
+    "crawl:status": "node --no-warnings scraper/cli.ts status",
+    "weekly": "node --no-warnings scraper/cli.ts weekly",
+    "flag": "node --no-warnings scraper/cli.ts flag",
+    "reparse": "node --no-warnings scraper/cli.ts reparse",
+    "sync": "node --no-warnings scraper/cli.ts sync",
+    "key:create": "node --no-warnings scraper/cli.ts key:create",
+    "watchdog": "node --no-warnings scraper/watchdog.ts",
+    "dev": "cd worker && wrangler dev",
+    "typecheck": "tsc --noEmit -p worker && tsc --noEmit -p scraper",
+    "e2e": "node --no-warnings scripts/e2e.ts"
+  }
+}
