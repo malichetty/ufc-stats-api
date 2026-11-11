@@ -11,5 +11,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": [".", "../scripts"]
+  "include": [".", "../scripts"],
+  "exclude": ["../scripts/regressions.test.ts"]
 }

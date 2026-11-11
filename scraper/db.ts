@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS fighters (
   profile_scraped_at TEXT
 );
 
+-- What the a-z fighter list pages say (names, nickname, champion belt), for every listed fighter, known or not:
+-- the weekly run reads the lists before it meets this week's new fighters.
+CREATE TABLE IF NOT EXISTS listed_fighters (
+  id TEXT PRIMARY KEY,
+  first_name TEXT,
+  last_name TEXT,
+  nickname TEXT,
+  is_champion INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS upcoming_events (
   id TEXT PRIMARY KEY,
   name TEXT,

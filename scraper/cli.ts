@@ -68,6 +68,10 @@ async function crawlRun(opts: CrawlOptions): Promise<number> {
     log(`fetched ${fetched} pages`);
     const s = status(db);
     log(`crawl list: ${s.done} done, ${s.pending} pending, ${s.failed} failed`);
+    if (s.failed) {
+      outcome = `${s.failed} page(s) failed 3 times; they are retried on the next run`;
+      log(outcome);
+    }
     if (opts.mode === 'weekly') {
       const late = unpublished(db);
       if (late.length) {

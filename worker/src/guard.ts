@@ -56,10 +56,23 @@ async function keyPerDay(env: Env, keyHash: string): Promise<number | null | und
   return perDay ?? undefined;
 }
 
-export async function identify(req: Request, env: Env): Promise<Client> {
+const tooMany = (detail: string, retryAfter: number, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify({ error: 'rate_limited', detail, retry_after: retryAfter }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Retry-After': String(retryAfter), ...headers },
+  });
+
+/**
+ * Admin first (a string compare), then a per-IP ceiling, and only then the D1 key lookup, so sending a new random
+ * key on every request can't turn into unlimited D1 reads.
+ */
+export async function identify(req: Request, env: Env): Promise<Client | Response> {
   const key = req.headers.get('X-API-Key');
   if (key && env.ADMIN_API_KEY && sameString(key, env.ADMIN_API_KEY)) {
     return { tier: 'admin', id: 'admin', perDay: null, perMinute: null };
+  }
+  if (!(await env.RL_CEILING.limit({ key: ipOf(req) })).success) {
+    return tooMany('Too many requests from this address. Wait a minute.', 60);
   }
   if (key && key.length <= 200) {
     const keyHash = await sha256(key);
@@ -83,30 +96,17 @@ const secondsToUtcMidnight = () => {
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
 };
 
-export async function enforce(req: Request, env: Env, ctx: ExecutionContext, client: Client, origin: string): Promise<LimitResult> {
+export async function enforce(env: Env, client: Client, origin: string): Promise<LimitResult> {
   if (client.tier === 'admin') return { blocked: null, headers: {} };
-
-  const tooMany = (detail: string, retryAfter: number, headers: Record<string, string>) => ({
-    blocked: new Response(JSON.stringify({ error: 'rate_limited', detail, retry_after: retryAfter }), {
-      status: 429,
-      headers: { 'Content-Type': 'application/json', 'Retry-After': String(retryAfter), ...headers },
-    }),
-    headers,
-  });
 
   const headers: Record<string, string> = {
     'X-RateLimit-Limit-Minute': String(client.perMinute),
     'X-RateLimit-Limit-Day': String(client.perDay),
   };
 
-  // A ceiling per IP whatever key is sent, so random keys can't be used to get around the per-IP limit.
-  const ip = ipOf(req);
-  if (!(await env.RL_CEILING.limit({ key: ip })).success) {
-    return tooMany('Too many requests from this address. Wait a minute.', 60, headers);
-  }
   const minute = client.tier === 'key' ? env.RL_KEY : env.RL_ANON;
   if (!(await minute.limit({ key: client.id })).success) {
-    return tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers);
+    return { blocked: tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers), headers };
   }
 
   if (client.perDay !== null) {
@@ -118,11 +118,11 @@ export async function enforce(req: Request, env: Env, ctx: ExecutionContext, cli
     const reset = secondsToUtcMidnight();
     headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay - used - 1));
     if (used >= client.perDay) {
-      return tooMany(`Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.`, reset, headers);
+      return { blocked: tooMany(`Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.`, reset, headers), headers };
     }
-    ctx.waitUntil(
-      cache.put(counterKey, new Response(String(used + 1), { headers: { 'Cache-Control': `public, max-age=${reset}` } })),
-    );
+    // Awaited, not deferred, to keep the read-then-write window short. Requests in flight at the same moment can
+    // still both count as one; the per-minute limit above bounds how far that lets anyone go past the allowance.
+    await cache.put(counterKey, new Response(String(used + 1), { headers: { 'Cache-Control': `public, max-age=${reset}` } }));
   }
   return { blocked: null, headers };
 }

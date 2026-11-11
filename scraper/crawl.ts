@@ -70,13 +70,8 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'fighter_list') {
     for (const f of parseFighterList(html)) {
-      const known = db.prepare('SELECT 1 FROM fighters WHERE id = ?').get(f.id);
-      if (!known && opts.mode !== 'full') continue;
-      db.prepare(
-        `INSERT INTO fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
-           nickname = COALESCE(excluded.nickname, fighters.nickname), is_champion = excluded.is_champion`,
-      ).run(f.id, f.first_name, f.last_name, f.nickname, f.is_champion ? 1 : 0);
+      db.prepare(`INSERT OR REPLACE INTO listed_fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)`)
+        .run(f.id, f.first_name, f.last_name, f.nickname, f.is_champion ? 1 : 0);
       if (opts.mode === 'full') enqueue(db, fighterUrl(f.id));
     }
     return;
@@ -101,16 +96,19 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
            time = COALESCE(fights.time, excluded.time)`,
       ).run(f.id, e.id, f.bout_order, f.fighter1_id, f.fighter2_id, f.fighter1_name, f.fighter2_name,
         f.weight_class, JSON.stringify(f.bonuses), f.method, f.method_detail, f.round, f.time);
-      // A fight without a result yet is fetched again when its event is retried.
-      enqueue(db, fightUrl(f.id), f.flags.length === 0);
+      // Fetch the fight page again while it has no result: either the event page shows none yet, or we stored the
+      // fight page before the result was posted.
+      const stored = db.prepare('SELECT fighter1_result r, page_scraped_at at FROM fights WHERE id = ?').get(f.id) as
+        { r: string | null; at: string | null } | undefined;
+      enqueue(db, fightUrl(f.id), f.flags.length === 0 || (!!stored?.at && stored.r === null));
     }
     return;
   }
 
   if (kind === 'fight') {
     const f = parseFight(id, html);
-    const before = db.prepare('SELECT page_scraped_at FROM fights WHERE id = ?').get(id) as
-      | { page_scraped_at: string | null } | undefined;
+    const before = db.prepare('SELECT page_scraped_at, fighter1_result FROM fights WHERE id = ?').get(id) as
+      | { page_scraped_at: string | null; fighter1_result: string | null } | undefined;
     const [a, b] = f.fighters;
     db.prepare(
       `INSERT INTO fights (id, event_id, fighter1_id, fighter2_id, fighter1_name, fighter2_name, fighter1_nickname,
@@ -131,12 +129,12 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     const cols = ['fight_id', 'fighter_id', 'round', ...STAT_FIELDS];
     const ins = db.prepare(`INSERT INTO fight_stats (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
     for (const s of f.stats) ins.run(id, s.fighter_id, s.round, ...STAT_FIELDS.map((k) => s[k]));
-    // A fighter who just fought has a new record and new career stats.
-    const firstTime = !before?.page_scraped_at;
+    // A fighter who just fought, or whose result was just posted, has a new record and new career stats.
+    const changed = !before?.page_scraped_at || (before.fighter1_result ?? null) !== (a?.result ?? null);
     for (const p of f.fighters) {
       if (!p.id) continue;
       db.prepare('INSERT OR IGNORE INTO fighters (id, name) VALUES (?, ?)').run(p.id, p.name);
-      enqueue(db, fighterUrl(p.id), firstTime && opts.mode !== 'full');
+      enqueue(db, fighterUrl(p.id), changed && opts.mode !== 'full');
     }
     return;
   }
@@ -239,6 +237,8 @@ export function reparse(db: DatabaseSync, opts: CrawlOptions): number {
 export function seed(db: DatabaseSync, opts: CrawlOptions): void {
   enqueue(db, EVENTS_LIST_URL, true);
   if (opts.mode === 'sample') return;
+  // Pages that failed three times in an earlier run (flagged pages included) get three more tries each run.
+  db.exec(`UPDATE pages SET status = 'pending', attempts = 0 WHERE status = 'failed'`);
   enqueue(db, UPCOMING_LIST_URL, true);
   for (const u of FIGHTER_LIST_URLS) enqueue(db, u, opts.mode === 'weekly');
   if (opts.mode !== 'weekly') return;

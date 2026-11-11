@@ -21,6 +21,7 @@
     "watchdog": "node --no-warnings scraper/watchdog.ts",
     "dev": "cd worker && wrangler dev",
     "typecheck": "tsc --noEmit -p worker && tsc --noEmit -p scraper",
-    "e2e": "node --no-warnings scripts/e2e.ts"
+    "e2e": "node --no-warnings scripts/e2e.ts",
+    "test": "node --no-warnings --test scripts/regressions.test.ts"
   }
 }

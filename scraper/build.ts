@@ -69,7 +69,13 @@ export function build(db: DatabaseSync): Built {
     list.push(s);
     statsByFight.set(s.fight_id, list);
   }
-  const fighters = db.prepare(`SELECT * FROM fighters WHERE profile_scraped_at IS NOT NULL`).all() as Any[];
+  const listed = new Map((db.prepare('SELECT * FROM listed_fighters').all() as Any[]).map((l) => [l.id, l]));
+  const fighters = (db.prepare(`SELECT * FROM fighters WHERE profile_scraped_at IS NOT NULL`).all() as Any[]).map((f) => {
+    const l = listed.get(f.id);
+    return l
+      ? { ...f, first_name: l.first_name, last_name: l.last_name, nickname: f.nickname ?? l.nickname, is_champion: l.is_champion }
+      : f;
+  });
 
   const eventRef = (e: Any) => ({ id: e.id, name: e.name, date: e.date, location: e.location });
 
@@ -248,7 +254,6 @@ export function build(db: DatabaseSync): Built {
 
   const stance = (s: string) => fighters.filter((f) => (f.stance ?? '').toLowerCase() === s).length;
   const methods = [...new Set(fights.map((f) => f.method).filter(Boolean))].sort();
-  const weightClasses = [...new Set(fights.map((f) => f.weight_class).filter(Boolean))].sort();
   const roundRows = stats.filter((s) => s.round > 0).length;
   const overview = {
     total_fighters: fighters.length,
@@ -264,7 +269,6 @@ export function build(db: DatabaseSync): Built {
     { key: 'count_fights', value: String(fights.length) },
     { key: 'count_fighters', value: String(fighters.length) },
     { key: 'methods', value: JSON.stringify(methods) },
-    { key: 'weight_classes', value: JSON.stringify(weightClasses) },
     { key: 'overview', value: JSON.stringify(overview) },
   ];
 

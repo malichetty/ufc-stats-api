@@ -17,8 +17,10 @@ const SCRIPT = 'ufc-stats-api';
 const ZONE = 'aristotle.me';
 
 const PRESETS = {
-  // Paid: 10M requests/month and 25B D1 rows read/month are included. These caps keep the worst day to cents.
-  paid: { requests: 1_000_000, rowsRead: 1_000_000_000 },
+  // Paid: 10M requests/month and 25B D1 rows read/month are included. A cap of 300k a day (9M in a 30-day month)
+  // and 750M rows a day keeps even a month at the cap every day inside what's included. What can still get past
+  // is the traffic between two checks (10 minutes plus the analytics delay).
+  paid: { requests: 300_000, rowsRead: 750_000_000 },
   // Free: the account shares 100,000 requests/day and 5M D1 rows read/day across all its Workers. Stop at half.
   free: { requests: 50_000, rowsRead: 2_500_000 },
 };
@@ -106,23 +108,32 @@ async function main() {
 
   const over = now.requests > caps.requests || now.rowsRead > caps.rowsRead;
   if (over && !state.detachedOn) {
-    const zone = (await cf(tok, 'GET', `zones?name=${ZONE}`)).result[0];
-    const domains = (await cf(tok, 'GET', `accounts/${ACCOUNT_ID}/workers/domains?hostname=${HOSTNAME}`)).result as { id: string }[];
     let detached = false;
     try {
+      const domains = (await cf(tok, 'GET', `accounts/${ACCOUNT_ID}/workers/domains?hostname=${HOSTNAME}`)).result as { id: string }[];
       for (const d of domains) await cf(tok, 'DELETE', `accounts/${ACCOUNT_ID}/workers/domains/${d.id}`);
-      detached = true;
+      detached = domains.length > 0;
     } catch (e) {
       log(`detach failed: ${(e as Error).message}`);
     }
     let killSet = false;
     if (!detached) {
-      setKill(true);
-      killSet = true;
+      try {
+        setKill(true);
+        killSet = true;
+      } catch (e) {
+        log(`kill flag failed: ${(e as Error).message}`);
+      }
+    }
+    if (!detached && !killSet) {
+      alert('PAUSE-FAILED', `Usage over the daily cap (${now.requests} requests, ${now.rowsRead} D1 rows read) and neither ` +
+        `the domain detach nor the D1 kill flag worked. Detach ${HOSTNAME} in the Cloudflare dashboard. The watchdog tries again in 10 minutes.`);
+      process.exitCode = 1;
+      return;
     }
     writeState({ detachedOn: today, killSet });
     alert('PAUSED', `Usage over the daily cap (${now.requests} requests, ${now.rowsRead} D1 rows read). ` +
-      `${detached ? `Custom domain ${HOSTNAME} detached (zone ${zone?.id}).` : 'Domain detach failed; D1 kill flag set (Worker answers 503).'} ` +
+      `${detached ? `Custom domain ${HOSTNAME} detached.` : 'Domain detach failed; D1 kill flag set (Worker answers 503).'} ` +
       'It comes back automatically on the next UTC day if usage stays under the cap.');
     return;
   }
@@ -145,6 +156,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  log(`watchdog failed: ${(e as Error).message}`);
+  // Without usage numbers the watchdog can't tell whether to pause, so it says so instead of guessing.
+  alert('WATCHDOG-FAILED', `The usage check failed: ${(e as Error).message}. It runs again in 10 minutes.`);
   process.exitCode = 1;
 });

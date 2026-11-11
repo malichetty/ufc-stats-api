@@ -179,11 +179,15 @@ await check('GET /api/stats/leaders and /overview', async () => {
 });
 
 await check('A repeated request is served from the edge cache', async () => {
-  const path = `/api/fights?limit=3&offset=${Math.floor(Math.random() * 3)}&method=dec`;
+  const path = `/api/fights?limit=3&offset=${Date.now() % 1_000_000}&method=dec`;
   const first = await get(path);
   assert.equal(first.headers.get('x-cache'), 'MISS');
-  await new Promise((r) => setTimeout(r, 300));
-  const second = await get(path);
+  // The cache write finishes after the response; locally it can take a moment.
+  let second = await get(path);
+  for (let i = 0; i < 6 && second.headers.get('x-cache') !== 'HIT'; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    second = await get(path);
+  }
   assert.equal(second.headers.get('x-cache'), 'HIT');
   assert.deepEqual(second.body, first.body);
 });
@@ -238,7 +242,8 @@ await check('Request-path queries use indexes (no full table scans)', async () =
     "SELECT summary FROM fights WHERE (fighter1_id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md') OR fighter2_id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md')) ORDER BY seq DESC LIMIT 5",
     "SELECT summary FROM fighters WHERE id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md') ORDER BY sort_name, id LIMIT 5",
     "SELECT summary FROM fighters WHERE stance = 'orthodox' COLLATE NOCASE ORDER BY sort_name, id LIMIT 5",
-    'SELECT id FROM fighters WHERE slpm IS NOT NULL AND total_fights >= 5 ORDER BY slpm DESC, sort_name LIMIT 10',
+    'SELECT id FROM fighters WHERE slpm IS NOT NULL AND total_fights >= 5 ORDER BY slpm DESC LIMIT 10',
+    'SELECT summary FROM fighters ORDER BY wins DESC LIMIT 50 OFFSET 50',
     "SELECT doc FROM fights WHERE id = 'x'",
   ];
   for (const sql of plans) {
@@ -246,6 +251,11 @@ await check('Request-path queries use indexes (no full table scans)', async () =
     const details: string[] = out[0].results.map((r: any) => r.detail);
     const scans = details.filter((d) => /^SCAN (events|fights|fighters|name_tokens)\b/.test(d) && !/USING (COVERING )?INDEX/.test(d));
     assert.equal(scans.length, 0, `${sql}\n  plan: ${details.join(' | ')}`);
+    // An ORDER BY that has to sort every matching row is a scan in disguise. Exempt: name searches and one
+    // fighter's fights (a few dozen rows), and multi-method filters (bounded by the fights table; see the PR).
+    if (!/name_tokens|IN \('|fighter1_id = /.test(sql)) {
+      assert.ok(!details.some((d) => /TEMP B-TREE FOR ORDER BY/.test(d)), `${sql} sorts every row\n  plan: ${details.join(' | ')}`);
+    }
   }
 });
 

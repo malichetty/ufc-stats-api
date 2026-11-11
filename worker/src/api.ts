@@ -16,8 +16,10 @@ export interface Out {
 }
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -60,14 +62,28 @@ function tokenQuery(table: 'name_tokens' | 'event_tokens', col: string, terms: s
 const listBody = (total: number, limit: number, offset: number, rows: { s: string }[]) =>
   `{"total":${total},"limit":${limit},"offset":${offset},"data":[${rows.map((r) => r.s).join(',')}]}`;
 
-/** Canonical query string: only known params, sorted, with clamped values. Also the cache key. */
-export function canonical(url: URL, allowed: string[]): string {
+/**
+ * Canonical query string: only known params, sorted, and whole numbers written one way and clamped to their
+ * maximum (`limit=5e2`, `500.0` and `9999` are one cache entry). Also the cache key.
+ */
+export function canonical(url: URL, allowed: string[], caps: Record<string, number>): string {
   const out = new URLSearchParams();
-  for (const k of allowed.sort()) {
-    const v = url.searchParams.get(k);
-    if (v !== null && v !== '') out.set(k, v.trim().slice(0, 100));
+  for (const k of [...allowed].sort()) {
+    let v = url.searchParams.get(k)?.trim();
+    if (!v) continue;
+    if (k in caps) {
+      const n = Number(v);
+      if (Number.isInteger(n)) v = String(Math.min(n, caps[k]));
+    }
+    out.set(k, v.slice(0, 100));
   }
   return out.toString();
+}
+
+/** Largest value each whole-number parameter accepts, per route; `int()` below enforces the same numbers. */
+export function paramCaps(path: string, client: Client): Record<string, number> {
+  const limit = path === '/api/fighters' ? maxLimit(client, 500) : path === '/api/stats/leaders' ? 50 : 200;
+  return { limit, offset: 1_000_000, year: 2100, min_wins: 1000, min_fights: 100 };
 }
 
 function maxLimit(client: Client, normal: number): number {
@@ -106,7 +122,8 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
   if (sortBy && !(FIGHTER_SORTS as readonly string[]).includes(sortBy) && sortBy !== 'name') {
     throw new HttpError(422, `sort_by must be one of: name, ${FIGHTER_SORTS.join(', ')}`);
   }
-  const order = !sortBy || sortBy === 'name' ? 'sort_name, id' : `${sortBy} DESC, sort_name, id`;
+  // A stat sort orders by the stat alone so SQLite walks that stat's index instead of sorting every fighter.
+  const order = !sortBy || sortBy === 'name' ? 'sort_name, id' : `${sortBy} DESC`;
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = where.length
     ? ((await env.DB.prepare(`SELECT COUNT(*) n FROM fighters ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0)
@@ -294,7 +311,7 @@ export async function statLeaders(env: Env, p: URLSearchParams): Promise<Out> {
   const minFights = int(p, 'min_fights', 5, 0, 100);
   const { results } = await env.DB.prepare(
     `SELECT id, name, wins, losses, draws, ${stat} v FROM fighters
-     WHERE ${stat} IS NOT NULL AND total_fights >= ? ORDER BY ${stat} DESC, sort_name LIMIT ?`,
+     WHERE ${stat} IS NOT NULL AND total_fights >= ? ORDER BY ${stat} DESC LIMIT ?`,
   )
     .bind(minFights, limit)
     .all<{ id: string; name: string; wins: number; losses: number; draws: number; v: number }>();

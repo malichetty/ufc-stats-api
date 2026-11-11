@@ -1,5 +1,5 @@
 import {
-  HttpError, canonical, compareFighters, getEvent, getFight, getFighter, getFighterFights, getFighterStats,
+  HttpError, canonical, compareFighters, paramCaps, getEvent, getFight, getFighter, getFighterFights, getFighterStats,
   listEvents, listFighters, listFights, overview, statLeaders, type Meta, type Out,
 } from './api';
 import { enforce, identify, type Client } from './guard';
@@ -26,10 +26,16 @@ async function loadMeta(env: Env, ctx: ExecutionContext, origin: string): Promis
   if (hit) raw = await hit.json();
   else {
     const marks = META_KEYS.map(() => '?').join(',');
-    const { results } = await env.DB.prepare(`SELECT key, value FROM meta WHERE key IN (${marks})`)
-      .bind(...META_KEYS)
-      .all<{ key: string; value: string }>();
-    raw = Object.fromEntries(results.map((r) => [r.key, r.value]));
+    try {
+      const { results } = await env.DB.prepare(`SELECT key, value FROM meta WHERE key IN (${marks})`)
+        .bind(...META_KEYS)
+        .all<{ key: string; value: string }>();
+      raw = Object.fromEntries(results.map((r) => [r.key, r.value]));
+    } catch (e) {
+      // D1 down: keep answering from the edge cache with the version we last knew.
+      if (metaMemo) return metaMemo.meta;
+      throw e;
+    }
     ctx.waitUntil(caches.default.put(key, new Response(JSON.stringify(raw), { headers: { 'Cache-Control': `public, max-age=${ttl}` } })));
   }
   const r = raw ?? {};
@@ -50,7 +56,7 @@ interface Route {
   re: RegExp;
   params: string[];
   handle: Handler;
-  /** Responses that don't depend on the data or the caller skip the edge cache. */
+  /** Cheap responses built without D1 skip the edge cache. */
   static?: boolean;
 }
 
@@ -61,6 +67,7 @@ const ROUTES: Route[] = [
   {
     re: /^\/health$/,
     params: [],
+    static: true,
     handle: (_e, meta) =>
       json({
         status: 'healthy',
@@ -69,6 +76,7 @@ const ROUTES: Route[] = [
         fights_loaded: meta.counts.fights,
         data_version: meta.version,
         last_updated: meta.lastUpdated,
+        timestamp: new Date().toISOString(),
       }),
   },
   { re: /^\/openapi\.json$/, params: [], static: true, handle: (_e, _m, _p, _c, _x, origin) => json(openapi(origin)) },
@@ -115,7 +123,7 @@ function rootInfo(origin: string) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-  'Access-Control-Allow-Headers': 'X-API-Key, Content-Type',
+  'Access-Control-Allow-Headers': '*',
   'Access-Control-Max-Age': '86400',
 };
 
@@ -144,7 +152,8 @@ export default {
       }
 
       const client = await identify(req, env);
-      const limit = await enforce(req, env, ctx, client, origin);
+      if (client instanceof Response) return client;
+      const limit = await enforce(env, client, origin);
       if (limit.blocked) return limit.blocked;
       const base = { ...limit.headers, 'X-Data-Version': meta.version };
 
@@ -164,7 +173,7 @@ export default {
       }
 
       // The tier is part of the key because the largest allowed `limit` depends on it.
-      const query = canonical(url, route.params);
+      const query = canonical(url, route.params, paramCaps(path, client));
       const cacheKey = new Request(`${origin}/__c/${meta.version}/${client.tier === 'anon' ? 'a' : client.tier}${path}?${query}`);
       const hit = await caches.default.match(cacheKey);
       if (hit) {
