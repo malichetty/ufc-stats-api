@@ -67,9 +67,10 @@ async function crawlRun(opts: CrawlOptions): Promise<number> {
     fetched = await drain(db, opts);
     log(`fetched ${fetched} pages`);
     const s = status(db);
-    log(`crawl list: ${s.done} done, ${s.pending} pending, ${s.failed} failed`);
-    if (s.failed) {
-      outcome = `${s.failed} page(s) failed 3 times; they are retried on the next run`;
+    log(`crawl list: ${s.done} done, ${s.pending} pending, ${s.failed} failed, ${s.gone} gone (404)`);
+    if (s.failed || s.gone) {
+      const failed = db.prepare(`SELECT url, status FROM pages WHERE status IN ('failed', 'gone') ORDER BY url LIMIT 20`).all() as { url: string; status: string }[];
+      outcome = `${s.failed} page(s) failing (retried once each run), ${s.gone} gone (404; \`pnpm flag <url>\` reopens): ${failed.map((f) => f.url).join(' ')}`;
       log(outcome);
     }
     if (opts.mode === 'weekly') {
@@ -112,7 +113,7 @@ async function main(): Promise<number> {
     case 'status': {
       const db = openDb();
       const s = status(db);
-      const total = s.done + s.pending + s.failed;
+      const total = s.done + s.pending + s.failed + s.gone;
       const recent = db.prepare(`SELECT fetched_at FROM pages WHERE status = 'done' ORDER BY fetched_at DESC LIMIT 200`).all() as { fetched_at: string }[];
       let eta = 'unknown';
       if (recent.length > 10 && s.pending) {
@@ -120,7 +121,7 @@ async function main(): Promise<number> {
         const perPage = span / (recent.length - 1);
         eta = `${((perPage * s.pending) / 3_600_000).toFixed(1)} h at ${(perPage / 1000).toFixed(1)} s/page`;
       }
-      console.log(`pages: ${s.done} done of ${total} known (${s.pending} pending, ${s.failed} failed); time left: ${eta}`);
+      console.log(`pages: ${s.done} done of ${total} known (${s.pending} pending, ${s.failed} failed, ${s.gone} gone); time left: ${eta}`);
       for (const r of s.rows) console.log(`  ${r.kind.padEnd(14)} ${r.status.padEnd(8)} ${r.n}`);
       for (const t of ['events', 'fights', 'fight_stats', 'fighters']) {
         console.log(`  table ${t}: ${(db.prepare(`SELECT COUNT(*) n FROM ${t}`).get() as { n: number }).n}`);

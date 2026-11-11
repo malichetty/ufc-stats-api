@@ -213,12 +213,13 @@ export async function drain(
         if (fetched % 50 === 0) log(`fetched ${fetched} pages (last: ${next.url})`);
       } catch (e) {
         if (e instanceof BlockedError) throw e;
-        // Only first tries count toward the stop: a page that keeps failing on its retries is that page's problem,
-        // not a sign ufcstats is turning us away. A 404 won't fix itself within a run, so it gets no retries.
+        // Only a page's first-ever try counts toward the stop: that is the evidence ufcstats has stopped answering.
+        // Retries of pages that failed before are that page's problem. A 404 is final ('gone'); `pnpm flag` reopens it.
         if (next.attempts === 0) failuresInARow++;
-        const attempts = /HTTP 404/.test((e as Error).message) ? MAX_ATTEMPTS : next.attempts + 1;
+        const gone = /HTTP 404/.test((e as Error).message);
+        const attempts = next.attempts + 1;
         db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
-          .run(attempts, String((e as Error).message).slice(0, 500), attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
+          .run(attempts, String((e as Error).message).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
         log(`error on ${next.url}: ${(e as Error).message}`);
         if (failuresInARow >= MAX_FAILURES_IN_A_ROW) {
           throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${(e as Error).message})`);
@@ -248,8 +249,9 @@ export function reparse(db: DatabaseSync, opts: CrawlOptions): number {
 export function seed(db: DatabaseSync, opts: CrawlOptions): void {
   enqueue(db, EVENTS_LIST_URL, true);
   if (opts.mode === 'sample') return;
-  // Pages that failed three times in an earlier run (flagged pages included) get three more tries each run.
-  db.exec(`UPDATE pages SET status = 'pending', attempts = 0 WHERE status = 'failed'`);
+  // Pages that failed three times in an earlier run (flagged pages included) get one quiet retry each run; at
+  // attempts = MAX - 1 a failure sends them straight back to 'failed' and doesn't count toward the stop.
+  db.exec(`UPDATE pages SET status = 'pending', attempts = ${MAX_ATTEMPTS - 1} WHERE status = 'failed'`);
   enqueue(db, UPCOMING_LIST_URL, true);
   for (const u of FIGHTER_LIST_URLS) enqueue(db, u, opts.mode === 'weekly');
   if (opts.mode !== 'weekly') return;
@@ -272,7 +274,7 @@ export function status(db: DatabaseSync) {
   const rows = db.prepare('SELECT kind, status, COUNT(*) n FROM pages GROUP BY kind, status').all() as
     { kind: string; status: string; n: number }[];
   const by = (s: string) => rows.filter((r) => r.status === s).reduce((t, r) => t + r.n, 0);
-  return { rows, done: by('done'), pending: by('pending'), failed: by('failed') };
+  return { rows, done: by('done'), pending: by('pending'), failed: by('failed'), gone: by('gone') };
 }
 
 export { BlockedError };

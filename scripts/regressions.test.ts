@@ -77,7 +77,7 @@ test('pages that keep failing do not stop the run, so the weekly load still happ
   const { drain, seed } = await import('../scraper/crawl.ts');
   const db = openDb();
   db.exec('DELETE FROM pages');
-  const broken = ['1', '2', '3'].map((n) => `http://ufcstats.com/fight-details/${n.repeat(16)}`);
+  const broken = ['1', '2', '3', '4', '5', '6'].map((n) => `http://ufcstats.com/fight-details/${n.repeat(16)}`);
   for (const u of broken) {
     enqueue(db, u);
     db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(u);
@@ -91,6 +91,18 @@ test('pages that keep failing do not stop the run, so the weekly load still happ
   };
   await drain(db, { mode: 'weekly', log: () => {} }, fetcher); // must not throw
   for (const u of broken) assert.equal(status(db, u), 'failed');
+});
+
+test('a 404 page is gone: later runs do not fetch it again until it is flagged', async () => {
+  const { seed } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  const url = 'http://ufcstats.com/fight-details/ffffffffffffffff';
+  enqueue(db, url);
+  db.prepare(`UPDATE pages SET status = 'gone', attempts = 1 WHERE url = ?`).run(url);
+  seed(db, { mode: 'weekly' });
+  assert.equal(status(db, url), 'gone');
+  enqueue(db, url, true); // what `pnpm flag` leads to on the next run
+  assert.equal(status(db, url), 'pending');
 });
 
 test('equal numbers spelled differently share one cache key', async () => {
