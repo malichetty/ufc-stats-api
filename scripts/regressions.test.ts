@@ -53,6 +53,16 @@ test('a fight stored before its result was posted is fetched again, with its fig
   assert.equal(status(db, `http://ufcstats.com/fighter-details/${F2}`), 'pending', 'fighter 2 profile is queued again');
 });
 
+test('an event stays open while a fight page still has no result, even if the event page shows one', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const recent = new Date(Date.now() - 86_400_000).toLocaleDateString('en-US', { month: 'long', day: '2-digit', year: 'numeric' });
+  ingest(db, `http://ufcstats.com/event-details/${EVENT}`, eventPage('win').replace('November 07, 2026', recent), opts);
+  ingest(db, `http://ufcstats.com/fight-details/${FIGHT}`, fightPage('', ''), opts);
+  const ev = db.prepare('SELECT complete FROM events WHERE id = ?').get(EVENT) as { complete: number };
+  assert.equal(ev.complete, 0);
+});
+
 test('a page that failed three times is retried on the next weekly run', async () => {
   const { seed } = await import('../scraper/crawl.ts');
   const db = openDb();
@@ -61,6 +71,26 @@ test('a page that failed three times is retried on the next weekly run', async (
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(url);
   seed(db, { mode: 'weekly' });
   assert.equal(status(db, url), 'pending');
+});
+
+test('pages that keep failing do not stop the run, so the weekly load still happens', async () => {
+  const { drain, seed } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  db.exec('DELETE FROM pages');
+  const broken = ['1', '2', '3'].map((n) => `http://ufcstats.com/fight-details/${n.repeat(16)}`);
+  for (const u of broken) {
+    enqueue(db, u);
+    db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(u);
+  }
+  seed(db, { mode: 'weekly' }); // queues the lists again and resets the failed pages
+  db.exec(`UPDATE pages SET status = 'done' WHERE kind != 'fight'`); // only the broken pages are left to fetch
+  const fetcher = {
+    open: async () => {},
+    close: async () => {},
+    get: async (url: string) => { throw new Error(`HTTP 500 for ${url}`); },
+  };
+  await drain(db, { mode: 'weekly', log: () => {} }, fetcher); // must not throw
+  for (const u of broken) assert.equal(status(db, u), 'failed');
 });
 
 test('equal numbers spelled differently share one cache key', async () => {

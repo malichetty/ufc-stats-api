@@ -111,5 +111,5 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 ## 9. Open questions
 
-- Workers plan (Free or Paid): the answer sets the watchdog thresholds. My pick is Paid, with a 300,000-requests-a-day cutoff (9M a month, under the 10M included).
+- Workers plan (Free or Paid): the answer sets the watchdog thresholds. My pick is Paid, with a 300,000-requests-a-day cutoff (9M a month for this API, under the 10M included that all of the account's Workers share).
 - The old admin key value: if Aris has it, set the same secret so the quiz keeps working untouched. If not, set a new one and update `UFC_API_KEY` on the two quiz Workers.

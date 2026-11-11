@@ -17,9 +17,9 @@ const SCRIPT = 'ufc-stats-api';
 const ZONE = 'aristotle.me';
 
 const PRESETS = {
-  // Paid: 10M requests/month and 25B D1 rows read/month are included. A cap of 300k a day (9M in a 30-day month)
-  // and 750M rows a day keeps even a month at the cap every day inside what's included. What can still get past
-  // is the traffic between two checks (10 minutes plus the analytics delay).
+  // Paid: 10M requests/month and 25B D1 rows read/month are included, shared by every Worker on the account.
+  // 300k a day (9M in a 30-day month) and 750M rows a day keep this API alone under that; the other Workers here
+  // are small today. Traffic between two checks (10 minutes plus the analytics delay) can still get past a cap.
   paid: { requests: 300_000, rowsRead: 750_000_000 },
   // Free: the account shares 100,000 requests/day and 5M D1 rows read/day across all its Workers. Stop at half.
   free: { requests: 50_000, rowsRead: 2_500_000 },

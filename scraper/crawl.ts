@@ -125,6 +125,12 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     ).run(id, f.event_id ?? '', a?.id ?? null, b?.id ?? null, a?.name ?? null, b?.name ?? null,
       a?.nickname ?? null, b?.nickname ?? null, a?.result ?? null, b?.result ?? null, f.bout, f.title_bout ? 1 : 0,
       f.method, f.details, f.round, f.time, f.time_format, f.referee, now);
+    if (!a?.result && !b?.result && f.event_id) {
+      // The event page can show a result before the fight page does; keep a recent event open so the next run
+      // fetches it, and through it this fight, again. Older events are left alone so a fight ufcstats never filled
+      // in isn't refetched every week.
+      db.prepare(`UPDATE events SET complete = 0 WHERE id = ? AND date >= date('now', '-30 days')`).run(f.event_id);
+    }
     db.prepare('DELETE FROM fight_stats WHERE fight_id = ?').run(id);
     const cols = ['fight_id', 'fighter_id', 'round', ...STAT_FIELDS];
     const ins = db.prepare(`INSERT INTO fight_stats (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`);
@@ -168,10 +174,13 @@ function nextPending(db: DatabaseSync): { url: string; kind: PageKind; attempts:
 }
 
 /** Fetch every pending page, one at a time. Returns the number of pages fetched. Throws BlockedError to stop. */
-export async function drain(db: DatabaseSync, opts: CrawlOptions): Promise<number> {
+export async function drain(
+  db: DatabaseSync,
+  opts: CrawlOptions,
+  fetcher: Pick<Fetcher, 'open' | 'get' | 'close'> = new Fetcher(),
+): Promise<number> {
   const log = opts.log ?? console.log;
   if (!nextPending(db)) return 0;
-  const fetcher = new Fetcher();
   await fetcher.open();
   let fetched = 0;
   let failuresInARow = 0;
@@ -204,8 +213,10 @@ export async function drain(db: DatabaseSync, opts: CrawlOptions): Promise<numbe
         if (fetched % 50 === 0) log(`fetched ${fetched} pages (last: ${next.url})`);
       } catch (e) {
         if (e instanceof BlockedError) throw e;
-        failuresInARow++;
-        const attempts = next.attempts + 1;
+        // Only first tries count toward the stop: a page that keeps failing on its retries is that page's problem,
+        // not a sign ufcstats is turning us away. A 404 won't fix itself within a run, so it gets no retries.
+        if (next.attempts === 0) failuresInARow++;
+        const attempts = /HTTP 404/.test((e as Error).message) ? MAX_ATTEMPTS : next.attempts + 1;
         db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
           .run(attempts, String((e as Error).message).slice(0, 500), attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
         log(`error on ${next.url}: ${(e as Error).message}`);
