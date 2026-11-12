@@ -64,7 +64,7 @@ ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► Mac Studio SQLi
 pnpm install && npx playwright install chromium
 pnpm crawl --full                 # first full crawl (~14,500 pages, ~12 h, resumable)
 pnpm crawl:status                 # pages done / pending / failed, time left
-pnpm weekly                       # what launchd runs: new events, their fights and fighters, list pages, flags
+pnpm weekly                       # what launchd runs: new events, their fights and fighters, list pages, flags, 100 known profiles
 pnpm flag http://ufcstats.com/fight-details/<id>   # fetch this page again on the next weekly run
 pnpm reparse                      # re-run the parsers over stored pages
 pnpm sync --target remote         # load what changed into D1

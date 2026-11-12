@@ -9,7 +9,7 @@
 
 Aris's brief decided these:
 - The scraper runs on the Studio and drives Playwright's bundled Chromium as a normal visitor. No stealth, no spoofing, no proxies. One page at a time, at least 2.5 s apart. If ufcstats blocks or rate-limits us, the run stops and reports it.
-- "Append" means new events, fights and fighters are inserted by ufcstats ID, and the fighters on a new card get their profile re-scraped. Nothing older is re-scraped unless it is flagged.
+- "Append" means new events, fights and fighters are inserted by ufcstats ID, and the fighters on a new card get their profile re-scraped. Nothing older is re-scraped unless it is flagged, except the 100 profiles a run re-read to find off-list cards (US-003, Aris approved 2026-11-12).
 - The API is a Worker plus D1 in the personal "Aristotle" account, on `ufcapi.aristotle.me`. The old endpoints and IDs keep working. Data moves to D1 in batched SQL files, never row by row.
 - Nothing on Cloudflare or DNS is created before Aris says yes to the exact spec.
 
@@ -51,12 +51,12 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 - [ ] *Verifiable:* the sample events' fight counts and per-fight round counts match the ufcstats pages.
 
 ### US-003: Weekly append
-- [ ] `pnpm weekly` reads the completed list and the upcoming list. It fetches only new events, their fights and their fighters, the fighter list pages, and anything flagged with `pnpm flag <url>`.
+- [ ] `pnpm weekly` reads the completed list and the upcoming list. It fetches new events, their fights and their fighters, the fighter list pages, incomplete events, anything flagged with `pnpm flag <url>`, and 100 known profiles (below).
 - [ ] If an upcoming event dated before today isn't listed as completed yet, the run exits with code 75 ("not published yet"). The retry run picks it up.
 - [ ] An event counts as done only when every fight on its card has a result. An incomplete event is fetched again on the next run.
 - [ ] Each event's `first_seen_at` is recorded, so publish timing can be read later.
-- [ ] Each run also re-reads 100 known fighter profiles (Aris approved 2026-11-12, an exception to "nothing older is re-scraped"): fighters from an off-list card in the last two years first, then the longest unread. That is how a later Road to UFC round made only of known fighters is found.
-- [ ] *Verifiable:* running `pnpm weekly` twice in a row, the second run fetches 2 list pages, 26 fighter list pages and 100 profiles, and writes nothing to D1 unless a refreshed profile changed.
+- [ ] Each run also re-reads 100 known fighter profiles (Aris approved 2026-11-12, an exception to "nothing older is re-scraped"): half from fighters on an off-list card in the last two years, half from everyone else, longest unread first in each. That is how a later Road to UFC round made only of known fighters is found.
+- [ ] *Verifiable:* running `pnpm weekly` twice in a row, the second run fetches 2 list pages, 26 fighter list pages, any incomplete events and 100 profiles, and writes nothing to D1 unless a refreshed profile changed.
 
 ### US-004: Load to D1
 - [ ] The Studio marks changed rows (by content hash), writes them to one SQL file per load, and runs it with `wrangler d1 execute --file`. The target is set by `UFC_D1_TARGET`: `local`, `remote` or `none`.

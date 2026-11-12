@@ -160,7 +160,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     for (const p of f.fighters) {
       if (!p.id) continue;
       db.prepare('INSERT OR IGNORE INTO fighters (id, name) VALUES (?, ?)').run(p.id, p.name);
-      enqueue(db, fighterUrl(p.id), changed && opts.mode !== 'full');
+      enqueue(db, fighterUrl(p.id), changed && opts.mode !== 'full' ? 'refresh' : false);
     }
     return;
   }
@@ -287,20 +287,23 @@ export function seed(db: DatabaseSync, opts: CrawlOptions): void {
   for (const f of db.prepare('SELECT url FROM flags').all() as { url: string }[]) enqueue(db, f.url, true);
   db.exec('DELETE FROM flags');
   for (const e of db.prepare('SELECT id FROM events WHERE complete = 0').all() as { id: string }[]) {
-    enqueue(db, eventUrl(e.id), true);
+    enqueue(db, eventUrl(e.id), 'refresh');
   }
   // Off-list cards (Contender Series, Road to UFC) are linked only from fighter profiles, and a later tournament
-  // round can be all known fighters. So each run also re-reads some known profiles (Aris approved 2026-11-12):
-  // fighters from an off-list card in the last two years first, then the longest unread.
-  const refresh = db.prepare(
-    `SELECT p.url FROM pages p WHERE p.kind = 'fighter' AND p.status = 'done'
-     ORDER BY substr(p.url, -16) IN (
-       SELECT f.fighter1_id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date >= date('now', '-2 years')
-       UNION SELECT f.fighter2_id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date >= date('now', '-2 years')
-     ) DESC, p.fetched_at ASC
-     LIMIT ?`,
-  ).all(PROFILE_REFRESH_PER_RUN) as { url: string }[];
-  for (const r of refresh) enqueue(db, r.url, 'refresh');
+  // round can be all known fighters. So each run also re-reads some known profiles (Aris approved 2026-11-12): half
+  // from fighters on an off-list card in the last two years, half from everyone else, longest unread first in each,
+  // so neither group starves the other.
+  // NULLs filtered out: one NULL in a NOT IN list makes it match nothing.
+  const recent = `SELECT id FROM (
+      SELECT f.fighter1_id id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date BETWEEN date('now', '-2 years') AND date('now')
+      UNION SELECT f.fighter2_id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date BETWEEN date('now', '-2 years') AND date('now')
+    ) WHERE id IS NOT NULL`;
+  const pick = (inGroup: boolean, n: number) => db.prepare(
+    `SELECT url FROM pages WHERE kind = 'fighter' AND status = 'done' AND substr(url, -16) ${inGroup ? '' : 'NOT '}IN (${recent})
+     ORDER BY fetched_at LIMIT ?`,
+  ).all(n) as { url: string }[];
+  const fromRecent = pick(true, PROFILE_REFRESH_PER_RUN / 2);
+  for (const r of [...fromRecent, ...pick(false, PROFILE_REFRESH_PER_RUN - fromRecent.length)]) enqueue(db, r.url, 'refresh');
 }
 
 /** Events ufcstats still lists as upcoming although their date has passed: results not published yet. */
