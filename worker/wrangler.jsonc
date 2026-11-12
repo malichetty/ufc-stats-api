@@ -12,7 +12,7 @@
       "binding": "DB",
       "database_name": "ufc-stats",
       // Replaced with the real id when the database is created (needs Aris's yes).
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "8f18336a-6088-46ea-8c27-a2ed1776e702",
       "migrations_dir": "migrations"
     }
   ],
