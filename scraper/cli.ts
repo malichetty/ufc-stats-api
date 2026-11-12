@@ -67,15 +67,20 @@ async function crawlRun(opts: CrawlOptions): Promise<number> {
     const s = status(db);
     log(`crawl list: ${s.done} done, ${s.pending} pending, ${s.failed} failed, ${s.gone} gone (404)`);
     if (s.failed || s.gone) {
-      const failed = db.prepare(`SELECT url, status FROM pages WHERE status IN ('failed', 'gone') ORDER BY url LIMIT 20`).all() as { url: string; status: string }[];
+      // List pages first: a rejected completed-events page means the whole run kept the old list.
+      const failed = db.prepare(
+        `SELECT url, status FROM pages WHERE status IN ('failed', 'gone')
+         ORDER BY kind NOT IN ('events_list', 'upcoming_list', 'fighter_list'), url LIMIT 20`,
+      ).all() as { url: string; status: string }[];
       outcome = `${s.failed} page(s) failing (retried once each run), ${s.gone} gone (404; \`pnpm flag <url>\` reopens): ${failed.map((f) => f.url).join(' ')}`;
       log(outcome);
     }
     if (opts.mode === 'weekly') {
       const late = unpublished(db);
       if (late.length) {
-        outcome = `not published yet: ${late.map((e) => `${e.name} (${e.date})`).join(', ')}`;
-        log(outcome);
+        const notYet = `not published yet: ${late.map((e) => `${e.name} (${e.date})`).join(', ')}`;
+        log(notYet);
+        outcome = outcome === 'ok' ? notYet : `${outcome}; ${notYet}`;
         code = EXIT_NOT_YET;
       }
     }

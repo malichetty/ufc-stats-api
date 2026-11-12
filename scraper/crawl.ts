@@ -46,6 +46,14 @@ export function enqueue(db: DatabaseSync, url: string, force: boolean | 'refresh
   }
 }
 
+/**
+ * A ufcstats layout change parses as empty or blank rather than failing, and writing that would wipe good stored data.
+ * Throwing here, before any write, makes it a page failure: retried, reported, and nothing changes.
+ */
+function unrecognised(what: string, detail: string): never {
+  throw new Error(`${what} not recognised (${detail}); layout change? Nothing updated`);
+}
+
 /** Parse a fetched page into the tables and queue the pages it links to. */
 export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlOptions): void {
   const kind = kindOf(url);
@@ -58,7 +66,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     // stored event as off the list. Refuse it: the page counts as failed and nothing changes.
     const had = (db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n;
     if (parsed.length === 0 || parsed.length < had * 0.9) {
-      throw new Error(`completed-events list parsed ${parsed.length} events, under 90% of the ${had} stored; layout change? Nothing updated`);
+      unrecognised('completed-events list', `${parsed.length} events, under 90% of the ${had} stored`);
     }
     let listed = parsed.filter((e) => !e.date || e.date <= today());
     if (opts.mode === 'sample') listed = listed.slice(0, opts.sampleEvents ?? 4);
@@ -79,6 +87,8 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'upcoming_list') {
     const upcoming = parseEventsList(html);
+    const hadUpcoming = (db.prepare('SELECT COUNT(*) n FROM upcoming_events').get() as { n: number }).n;
+    if (upcoming.length === 0 && hadUpcoming > 0) unrecognised('upcoming-events list', `0 events, ${hadUpcoming} stored`);
     // Fighter-profile discovery skips upcoming cards, so a card that leaves this list without reaching the completed
     // list (ufcstats merged Road to UFC 4.6 into another event) is fetched here instead.
     const still = new Set(upcoming.map((e) => e.id));
@@ -94,7 +104,9 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   }
 
   if (kind === 'fighter_list') {
-    for (const f of parseFighterList(html)) {
+    const listedFighters = parseFighterList(html);
+    if (listedFighters.length === 0) unrecognised('fighter list page', '0 fighters');
+    for (const f of listedFighters) {
       db.prepare(`INSERT OR REPLACE INTO listed_fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)`)
         .run(f.id, f.first_name, f.last_name, f.nickname, f.is_champion ? 1 : 0);
       // Not forced: only fighters without a stored profile are fetched, and a new fighter's profile is how the
@@ -106,6 +118,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'event') {
     const e = parseEvent(id, html);
+    if (!e.name) unrecognised('event page', 'no event name');
     const complete = e.fights.length > 0 && e.fights.every((f) => f.flags.length > 0);
     db.prepare(
       `INSERT INTO events (id, name, date, location, complete, first_seen_at, scraped_at) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -134,6 +147,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'fight') {
     const f = parseFight(id, html);
+    if (f.fighters.length < 2) unrecognised('fight page', `${f.fighters.length} fighters`);
     const before = db.prepare('SELECT page_scraped_at, fighter1_result FROM fights WHERE id = ?').get(id) as
       | { page_scraped_at: string | null; fighter1_result: string | null } | undefined;
     const [a, b] = f.fighters;
@@ -174,6 +188,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'fighter') {
     const p = parseFighter(id, html);
+    if (!p.name) unrecognised('fighter page', 'no name');
     db.prepare(
       `INSERT INTO fighters (id, name, nickname, record, wins, losses, draws, no_contests, height, height_inches,
          weight, weight_lbs, reach, reach_inches, stance, dob, slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def,

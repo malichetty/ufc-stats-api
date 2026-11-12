@@ -161,7 +161,7 @@ test('a card that leaves the upcoming list without reaching the completed list i
     <a href="http://ufcstats.com/event-details/${i}">Road to UFC</a><span class="b-statistics__date">December 01, 2099</span></td><td>Macau</td></tr>`).join('')}</table>`;
   ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming([card]), opts);
   assert.equal(db.prepare('SELECT 1 FROM pages WHERE url = ?').get(`http://ufcstats.com/event-details/${card}`), undefined);
-  ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming([]), opts);
+  ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming(['9999999999999999']), opts); // the card moved off
   assert.equal(status(db, `http://ufcstats.com/event-details/${card}`), 'pending');
 });
 
@@ -268,4 +268,15 @@ test('a completed-events page that parses short (a layout change) changes nothin
   assert.ok(before > 0);
   assert.throws(() => ingest(db, 'http://ufcstats.com/statistics/events/completed?page=all', '<html><body>new layout</body></html>', opts));
   assert.equal((db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n, before);
+});
+
+test('fighter, fight and event pages that parse blank (a layout change) change nothing', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const blank = '<html><body>new layout</body></html>';
+  const name = (db.prepare('SELECT name FROM fighters WHERE id = ?').get(F1) as { name: string } | undefined)?.name;
+  assert.throws(() => ingest(db, `http://ufcstats.com/fighter-details/${F1}`, blank, opts));
+  assert.equal((db.prepare('SELECT name FROM fighters WHERE id = ?').get(F1) as { name: string } | undefined)?.name, name);
+  assert.throws(() => ingest(db, `http://ufcstats.com/fight-details/${FIGHT}`, blank, opts));
+  assert.throws(() => ingest(db, `http://ufcstats.com/event-details/${EVENT}`, blank, opts));
 });
