@@ -60,7 +60,7 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 ### US-004: Load to D1
 - [ ] The Studio marks changed rows (by content hash), writes them to one SQL file per load, and runs it with `wrangler d1 execute --file`. The target is set by `UFC_D1_TARGET`: `local`, `remote` or `none`.
-- [ ] Each load bumps `data_version` in the D1 `meta` table, so cached responses roll over within 6 minutes.
+- [ ] Each load bumps `data_version` in the D1 `meta` table, so cached responses roll over within 2 minutes.
 - [ ] *Verifiable:* a load with nothing changed writes nothing and doesn't bump the version.
 
 ### US-005: Public API (Worker)
@@ -110,7 +110,7 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 - Verified source mechanics (2026-11-11): the completed list (`/statistics/events/completed?page=all`) has 796 events, newest first. Event pages list the card main event first, with bonus icons `fight.png`, `perf.png`, `sub.png` and `ko.png`. Fight pages have 4 tables (totals, per-round totals, significant strikes, per-round significant strikes). The per-round header says "Td %" twice, but the columns are in the same order as the totals. Fighter list pages show `belt.png` for champions. Fight-page headers don't send `Last-Modified` and are `no-store`.
 - When results appear: the public scraper Greco1899/scrape_ufc_stats refreshes daily at 18:00 UTC and commits only when data changes. For 9 straight Saturday cards (2026-09-19 to 2026-11-07) the new event first appeared in the Sunday 18:00 UTC run, never the Saturday run. So results are up within about 13 hours of a US card ending. The weekly run is Sunday 14:00 Eastern (19:00 UTC in winter, 18:00 UTC in summer), with a retry Monday 14:00 Eastern, and `first_seen_at` records the real timing.
-- Cost (cost-guardrails): no queues, no self-scheduling inside Cloudflare. The only timers are launchd on the Studio, each with a fixed schedule. The Worker does at most 1 D1 query per cache miss, plus one `meta` read per data centre every 5 minutes. Writes happen only in the weekly batch.
+- Cost (cost-guardrails): no queues, no self-scheduling inside Cloudflare. The only timers are launchd on the Studio, each with a fixed schedule. The Worker does at most 1 D1 query per cache miss, plus one `meta` read per data centre a minute (so the kill flag takes effect within about 2 minutes). Writes happen only in the weekly batch.
 - Plan: the account's Workers plan can't be read with the OAuth token. The account has exactly 10 D1 databases, which is the Free plan's cap, but a queue there has 4-day retention, which is a Paid-plan setting. Aris confirms the plan at the deploy question. On Free, an 11th D1 database can't be created, and the account-wide cap of 100,000 Worker requests a day is shared with his other 16 Workers.
 
 ## 8. Success metrics

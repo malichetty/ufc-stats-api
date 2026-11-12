@@ -17,11 +17,12 @@ const META_KEYS = [
 let metaMemo: { at: number; meta: Meta } | null = null;
 
 /**
- * Data version and counts. Read from D1 at most once per data centre every few minutes (edge cache), and once a
- * minute per isolate (memory), so a cache hit never touches D1.
+ * Data version, counts and the kill flag. Read from D1 at most once a minute per data centre (edge cache) and per
+ * isolate (memory), so a cache hit never touches D1.
  */
 async function loadMeta(env: Env, ctx: ExecutionContext, origin: string): Promise<Meta> {
-  const ttl = Number(env.META_TTL_SECONDS ?? 300);
+  // One minute, so the watchdog's fallback kill flag and a new data version reach every data centre within ~2 minutes.
+  const ttl = Number(env.META_TTL_SECONDS ?? 60);
   if (metaMemo && Date.now() - metaMemo.at < Math.min(60, ttl) * 1000) return metaMemo.meta;
   const key = new Request(`${origin}/__meta`);
   let raw: Record<string, string> | null = null;
