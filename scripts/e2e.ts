@@ -119,7 +119,7 @@ await check('GET /api/fighters/compare', async () => {
 });
 
 await check('GET /api/events paging, year, search, detail', async () => {
-  assert.equal(events.total, events.data.length);
+  assert.equal(events.data.length, Math.min(events.total, 200), 'a full page');
   const dates = events.data.map((e: any) => e.date);
   assert.deepEqual(dates, [...dates].sort().reverse(), 'newest first');
   const page2 = await get('/api/events?limit=1&offset=1');
