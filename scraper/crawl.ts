@@ -53,7 +53,14 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   const id = url.split('/').pop()!;
 
   if (kind === 'events_list') {
-    let listed = parseEventsList(html).filter((e) => !e.date || e.date <= today());
+    const parsed = parseEventsList(html);
+    // A layout change on ufcstats would parse as an empty or short list, and a whole-list read would then mark every
+    // stored event as off the list. Refuse it: the page counts as failed and nothing changes.
+    const had = (db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n;
+    if (parsed.length === 0 || parsed.length < had * 0.9) {
+      throw new Error(`completed-events list parsed ${parsed.length} events, under 90% of the ${had} stored; layout change? Nothing updated`);
+    }
+    let listed = parsed.filter((e) => !e.date || e.date <= today());
     if (opts.mode === 'sample') listed = listed.slice(0, opts.sampleEvents ?? 4);
     if (opts.since) listed = listed.filter((e) => e.date && e.date >= opts.since!);
     for (const e of listed) {

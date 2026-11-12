@@ -259,3 +259,13 @@ test('a card whose result-less fight is being fetched again is held back until t
   db.prepare(`UPDATE pages SET status = 'done' WHERE url = ?`).run(fightUrl);
   assert.ok(build(db).events.some((e) => e.id === ev), 'published once the result is in');
 });
+
+test('a completed-events page that parses short (a layout change) changes nothing', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  db.exec(`UPDATE events SET listed = 1`);
+  const before = (db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n;
+  assert.ok(before > 0);
+  assert.throws(() => ingest(db, 'http://ufcstats.com/statistics/events/completed?page=all', '<html><body>new layout</body></html>', opts));
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n, before);
+});
