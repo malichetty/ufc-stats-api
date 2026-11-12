@@ -55,13 +55,17 @@ console.log(`fighters in stored fights: ${fighterIds}; fighter profiles stored: 
 if (process.argv.includes('--full')) {
   const listed = parseEventsList(raw(EVENTS_LIST_URL) ?? '').length;
   const ref = { events: 796, fights: 9015, round_rows: 42356, fighters: 4628 };
+  // The reference covers only the completed-events list; the events found through fighter pages are counted apart.
+  const ufc = `SELECT f.id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 1 AND f.page_scraped_at IS NOT NULL`;
   const ours = {
-    events: n('SELECT COUNT(*) n FROM events WHERE scraped_at IS NOT NULL'),
-    fights: n('SELECT COUNT(*) n FROM fights WHERE page_scraped_at IS NOT NULL'),
-    round_rows: n('SELECT COUNT(*) n FROM fight_stats WHERE round > 0'),
+    events: n('SELECT COUNT(*) n FROM events WHERE scraped_at IS NOT NULL AND listed = 1'),
+    fights: n(`SELECT COUNT(*) n FROM (${ufc})`),
+    round_rows: n(`SELECT COUNT(*) n FROM fight_stats WHERE round > 0 AND fight_id IN (${ufc})`),
     fighters: profiles,
   };
   console.log(`\nevents listed on ufcstats: ${listed}`);
+  console.log(`not on the list (found through fighter pages): ${n('SELECT COUNT(*) n FROM events WHERE scraped_at IS NOT NULL AND listed = 0')} events, ` +
+    `${n('SELECT COUNT(*) n FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND f.page_scraped_at IS NOT NULL')} fights`);
   console.log('| | Reference (2026-11-08) | Ours | Difference |');
   console.log('|---|---|---|---|');
   for (const k of Object.keys(ref) as (keyof typeof ref)[]) {

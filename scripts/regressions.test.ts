@@ -133,3 +133,23 @@ test('an unknown API key is not looked up in D1 once the IP is over its ceiling'
   }
   assert.equal(d1Reads, 0);
 });
+
+test('an event ufcstats links only from fighter pages is fetched, and kept apart from the UFC list', async () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const listedId = '1111111111111111', hiddenId = '2222222222222222', upcomingId = '3333333333333333';
+  const list = `<table><tr class="b-statistics__table-row"><td><a href="http://ufcstats.com/event-details/${listedId}">UFC 1</a>
+    <span class="b-statistics__date">November 12, 1993</span></td><td>Denver</td></tr></table>`;
+  ingest(db, 'http://ufcstats.com/statistics/events/completed?page=all', list, opts);
+  db.prepare(`INSERT OR REPLACE INTO upcoming_events (id, name, seen_at) VALUES (?, 'UFC 999', 'now')`).run(upcomingId);
+  const profile = (ids: string[]) => `<html><body><span class="b-content__title-highlight">A One</span>
+    ${ids.map((i) => `<a href="http://ufcstats.com/event-details/${i}">x</a>`).join('')}</body></html>`;
+  ingest(db, `http://ufcstats.com/fighter-details/${F1}`, profile([listedId, hiddenId, upcomingId]), opts);
+  assert.equal(status(db, `http://ufcstats.com/event-details/${hiddenId}`), 'pending', 'the unlisted event is queued');
+  assert.equal(db.prepare('SELECT 1 FROM pages WHERE url = ?').get(`http://ufcstats.com/event-details/${upcomingId}`), undefined,
+    'an upcoming card is left for the completed list');
+  ingest(db, `http://ufcstats.com/event-details/${hiddenId}`, eventPage('win').replace('UFC Test', 'PRIDE 1'), opts);
+  const flag = (id: string) => (db.prepare('SELECT listed FROM events WHERE id = ?').get(id) as { listed: number }).listed;
+  assert.equal(flag(listedId), 1);
+  assert.equal(flag(hiddenId), 0);
+});

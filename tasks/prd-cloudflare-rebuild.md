@@ -20,6 +20,7 @@ The build session decided these:
 - The fighter list pages (26 pages, a to z) are fetched every week: They're the only place ufcstats shows the champion belt. That's 26 summary pages, not a re-scrape of fighter profiles.
 - Rate limits: 60 requests a minute and 5,000 a day per IP without a key. With a key it's 600 a minute and 100,000 a day. The admin key is unlimited. An unknown `X-API-Key` is treated as no key, not rejected, the same as the old API.
 - Compatibility: the old admin header `X-API-Key` still lifts the limits. The quiz Workers (`ufc-quiz-proxy`, `ufc-api-proxy`) call `/api/fighters` with it.
+- Events off the UFC list (decided by Aris 2026-11-12): ufcstats links 486 more events only from fighter pages (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others), with about 2,700 fights and full round stats. They're scraped and served, but lists stay UFC-only unless `?include=all`, so the quiz sees the same data as before. Every event and fight carries `ufc: true|false`.
 - **The old Python API is removed** from the repo. It lives in git history, and the Worker replaces it.
 
 ## 1. Introduction
@@ -67,6 +68,12 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 - [ ] `/docs` serves Swagger UI against `/openapi.json`.
 - [ ] Every query on the request path uses an index. List paging over events and fights reads at most `limit` rows, through a precomputed sequence number.
 - [ ] *Verifiable:* the end-to-end script calls every route against `wrangler dev` and checks status and shape.
+
+### US-007: Events off the UFC list
+- [ ] Every fighter profile the crawl reads queues the events it links that aren't stored yet (upcoming cards excepted), so the full crawl and the weekly run find them.
+- [ ] Events from the completed list are marked `listed`; the rest aren't. A whole-list read clears the mark from an event that drops off the list.
+- [ ] `/api/events`, `/api/fights`, `/api/fighters`, `/api/fighters/{id}` and `/api/fighters/{id}/fights` return UFC-list data by default and everything with `include=all`. Detail routes answer for any ID. Default paging still reads only `limit` rows.
+- [ ] *Verifiable:* the end-to-end script checks both modes and the query plans; a regression test checks that a profile link queues an unlisted event.
 
 ### US-006: Cost and abuse guardrails
 - [ ] A per-IP limit (the Workers rate-limit binding) returns 429 with `Retry-After`. A per-IP daily allowance is counted in the edge cache, which is free, and is approximate per data centre. IPv6 addresses are counted per /64.

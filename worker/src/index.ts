@@ -10,7 +10,10 @@ const EDGE_TTL = 7 * 24 * 3600;
 /** How long browsers and clients may reuse a response. */
 const CLIENT_TTL = 300;
 
-const META_KEYS = ['data_version', 'kill', 'count_events', 'count_fights', 'count_fighters', 'methods', 'overview', 'last_updated'];
+const META_KEYS = [
+  'data_version', 'kill', 'count_events', 'count_fights', 'count_fighters', 'count_events_all', 'count_fights_all',
+  'methods', 'overview', 'last_updated',
+];
 let metaMemo: { at: number; meta: Meta } | null = null;
 
 /**
@@ -42,7 +45,13 @@ async function loadMeta(env: Env, ctx: ExecutionContext, origin: string): Promis
   const meta: Meta = {
     version: r.data_version ?? '0',
     kill: r.kill === '1',
-    counts: { events: Number(r.count_events ?? 0), fights: Number(r.count_fights ?? 0), fighters: Number(r.count_fighters ?? 0) },
+    counts: {
+      events: Number(r.count_events ?? 0),
+      fights: Number(r.count_fights ?? 0),
+      fighters: Number(r.count_fighters ?? 0),
+      eventsAll: Number(r.count_events_all ?? r.count_events ?? 0),
+      fightsAll: Number(r.count_fights_all ?? r.count_fights ?? 0),
+    },
     methods: JSON.parse(r.methods ?? '[]'),
     overview: JSON.parse(r.overview ?? '{}'),
     lastUpdated: r.last_updated ?? null,
@@ -80,14 +89,14 @@ const ROUTES: Route[] = [
       }),
   },
   { re: /^\/openapi\.json$/, params: [], static: true, handle: (_e, _m, _p, _c, _x, origin) => json(openapi(origin)) },
-  { re: /^\/api\/fighters$/, params: ['limit', 'offset', 'search', 'min_wins', 'stance', 'weight_class', 'sort_by'], handle: (e, m, p, c) => listFighters(e, m, p, c) },
+  { re: /^\/api\/fighters$/, params: ['limit', 'offset', 'search', 'min_wins', 'stance', 'weight_class', 'sort_by', 'include'], handle: (e, m, p, c) => listFighters(e, m, p, c) },
   { re: /^\/api\/fighters\/compare$/, params: ['fighter1', 'fighter2'], handle: (e, _m, p) => compareFighters(e, p) },
   { re: /^\/api\/fighters\/([^/]+)\/stats$/, params: [], handle: (e, _m, _p, _c, x) => getFighterStats(e, x[1]) },
-  { re: /^\/api\/fighters\/([^/]+)\/fights$/, params: [], handle: (e, _m, _p, _c, x) => getFighterFights(e, x[1]) },
-  { re: /^\/api\/fighters\/([^/]+)$/, params: [], handle: (e, _m, _p, _c, x) => getFighter(e, x[1]) },
-  { re: /^\/api\/events$/, params: ['limit', 'offset', 'year', 'search'], handle: (e, m, p) => listEvents(e, m, p) },
+  { re: /^\/api\/fighters\/([^/]+)\/fights$/, params: ['include'], handle: (e, _m, p, _c, x) => getFighterFights(e, x[1], p) },
+  { re: /^\/api\/fighters\/([^/]+)$/, params: ['include'], handle: (e, _m, p, _c, x) => getFighter(e, x[1], p) },
+  { re: /^\/api\/events$/, params: ['limit', 'offset', 'year', 'search', 'include'], handle: (e, m, p) => listEvents(e, m, p) },
   { re: /^\/api\/events\/([^/]+)$/, params: [], handle: (e, _m, _p, _c, x) => getEvent(e, x[1]) },
-  { re: /^\/api\/fights$/, params: ['limit', 'offset', 'method', 'search', 'fighter_id', 'event_id', 'weight_class'], handle: (e, m, p) => listFights(e, m, p) },
+  { re: /^\/api\/fights$/, params: ['limit', 'offset', 'method', 'search', 'fighter_id', 'event_id', 'weight_class', 'include'], handle: (e, m, p) => listFights(e, m, p) },
   { re: /^\/api\/fights\/([^/]+)$/, params: [], handle: (e, _m, _p, _c, x) => getFight(e, x[1]) },
   { re: /^\/api\/stats\/leaders$/, params: ['stat', 'limit', 'min_fights'], handle: (e, _m, p) => statLeaders(e, p) },
   { re: /^\/api\/stats\/overview$/, params: [], handle: (_e, m) => overview(m) },

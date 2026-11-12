@@ -178,6 +178,46 @@ await check('GET /api/stats/leaders and /overview', async () => {
   }
 });
 
+await check('Lists are UFC-only by default; include=all adds the events ufcstats leaves off its list', async () => {
+  const o = (await get('/api/stats/overview')).body;
+  assert.ok(o.other_events > 0 && o.other_fights > 0, 'the local data has events found through fighter pages');
+  const ev = await get('/api/events?limit=200');
+  assert.equal(ev.body.total, o.total_events);
+  assert.ok(ev.body.data.every((e: any) => e.ufc === true));
+  const evAll = await get('/api/events?limit=200&include=all');
+  assert.equal(evAll.body.total, o.total_events + o.other_events);
+  const dates = evAll.body.data.map((e: any) => e.date);
+  assert.deepEqual(dates, [...dates].sort().reverse(), 'newest first');
+  const yearAll = await get(`/api/events?year=2005&include=all&limit=200`);
+  const year = await get(`/api/events?year=2005&limit=200`);
+  assert.ok(yearAll.body.total > year.body.total && year.body.data.every((e: any) => e.ufc));
+  const fights = await get('/api/fights?limit=200');
+  assert.equal(fights.body.total, o.total_fights);
+  assert.ok(fights.body.data.every((f: any) => f.ufc === true));
+  const all = await get('/api/fights?limit=200&include=all&offset=0');
+  assert.equal(all.body.total, o.total_fights + o.other_fights);
+  // An event ufcstats leaves off its list, reached through its fights.
+  const other = (await get(`/api/events?include=all&limit=200&offset=${o.total_events + o.other_events - 200}`)).body.data
+    .find((e: any) => !e.ufc);
+  assert.ok(other, 'paging to the oldest events finds one off the UFC list');
+  const card = (await get(`/api/events/${other.id}`)).body;
+  assert.equal(card.ufc, false);
+  const fight = (await get(`/api/fights/${card.fights[0].id}`)).body;
+  assert.equal(fight.ufc, false);
+  const who = fight.fighter1.id;
+  const plain = (await get(`/api/fighters/${who}`)).body;
+  assert.ok(!plain.fights.some((x: any) => x.fight_id === fight.id), 'default history leaves it out');
+  const full = (await get(`/api/fighters/${who}?include=all`)).body;
+  assert.ok(full.fights.some((x: any) => x.fight_id === fight.id && x.ufc === false), 'include=all has it');
+  const hist = (await get(`/api/fighters/${who}/fights?include=all`)).body;
+  assert.equal(hist.total, full.fights.length);
+  const byFighter = await get(`/api/fights?fighter_id=${who}&limit=200`);
+  assert.ok(!byFighter.body.data.some((x: any) => x.id === fight.id));
+  const byFighterAll = await get(`/api/fights?fighter_id=${who}&limit=200&include=all`);
+  assert.ok(byFighterAll.body.data.some((x: any) => x.id === fight.id));
+  assert.equal((await get('/api/events?include=everything')).status, 422);
+});
+
 await check('A repeated request is served from the edge cache', async () => {
   const path = `/api/fights?limit=3&offset=${Date.now() % 1_000_000}&method=dec`;
   const first = await get(path);
@@ -235,10 +275,13 @@ await check('A new data version rolls the cache over', async () => {
 
 await check('Request-path queries use indexes (no full table scans)', async () => {
   const plans = [
-    'SELECT summary FROM events WHERE seq <= 10 ORDER BY seq DESC LIMIT 5',
-    'SELECT summary FROM fights WHERE seq <= 10 ORDER BY seq DESC LIMIT 5',
-    "SELECT summary FROM fights WHERE method IN ('KO/TKO') ORDER BY seq DESC LIMIT 5 OFFSET 5",
-    "SELECT summary FROM fights WHERE (fighter1_id = 'x' OR fighter2_id = 'x') ORDER BY seq DESC LIMIT 5",
+    'SELECT summary FROM events WHERE ufc_seq BETWEEN 1 AND 10 ORDER BY ufc_seq DESC LIMIT 5',
+    'SELECT summary FROM events WHERE seq BETWEEN 1 AND 10 ORDER BY seq DESC LIMIT 5',
+    'SELECT summary FROM events WHERE ufc = 1 AND year = 2005 ORDER BY seq DESC LIMIT 5',
+    'SELECT summary FROM fights WHERE ufc_seq BETWEEN 1 AND 10 ORDER BY ufc_seq DESC LIMIT 5',
+    'SELECT summary FROM fights WHERE seq BETWEEN 1 AND 10 ORDER BY seq DESC LIMIT 5',
+    "SELECT summary FROM fights WHERE method IN ('KO/TKO') AND ufc = 1 ORDER BY seq DESC LIMIT 5 OFFSET 5",
+    "SELECT summary FROM fights WHERE (fighter1_id = 'x' OR fighter2_id = 'x') AND ufc = 1 ORDER BY seq DESC LIMIT 5",
     "SELECT summary FROM fights WHERE (fighter1_id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md') OR fighter2_id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md')) ORDER BY seq DESC LIMIT 5",
     "SELECT summary FROM fighters WHERE id IN (SELECT fighter_id FROM name_tokens WHERE token >= 'mc' AND token < 'md') ORDER BY sort_name, id LIMIT 5",
     "SELECT summary FROM fighters WHERE stance = 'orthodox' COLLATE NOCASE ORDER BY sort_name, id LIMIT 5",

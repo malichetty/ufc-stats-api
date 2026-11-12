@@ -3,7 +3,8 @@ import type { Client } from './guard';
 export interface Meta {
   version: string;
   kill: boolean;
-  counts: { events: number; fights: number; fighters: number };
+  /** events and fights count UFC-list rows only; eventsAll and fightsAll count everything. */
+  counts: { events: number; fights: number; fighters: number; eventsAll: number; fightsAll: number };
   methods: string[];
   overview: Record<string, unknown>;
   lastUpdated: string | null;
@@ -40,6 +41,14 @@ function int(p: URLSearchParams, name: string, def: number, min: number, max: nu
   if (!Number.isInteger(n)) throw new HttpError(422, `${name} must be a whole number`);
   if (n < min) throw new HttpError(422, `${name} must be at least ${min}`);
   return Math.min(n, max);
+}
+
+/** `?include=all` adds events ufcstats leaves off its UFC list; the default is UFC-only, as in the old API. */
+function includeAll(p: URLSearchParams): boolean {
+  const v = p.get('include')?.trim().toLowerCase();
+  if (!v || v === 'ufc') return false;
+  if (v === 'all') return true;
+  throw new HttpError(422, 'include must be ufc or all');
 }
 
 const str = (p: URLSearchParams, name: string): string | null => {
@@ -128,25 +137,27 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
   const total = where.length
     ? ((await env.DB.prepare(`SELECT COUNT(*) n FROM fighters ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0)
     : meta.counts.fighters;
-  const { results } = await env.DB.prepare(`SELECT summary s FROM fighters ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
+  const col = includeAll(p) ? 'COALESCE(summary_all, summary)' : 'summary';
+  const { results } = await env.DB.prepare(`SELECT ${col} s FROM fighters ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
     .bind(...binds, limit, offset)
     .all<{ s: string }>();
   return ok(listBody(total, limit, offset, results));
 }
 
-async function fighterRow(env: Env, id: string, col: 'summary' | 'doc'): Promise<string | null> {
+async function fighterRow(env: Env, id: string, col: 'summary' | 'doc' | 'doc_all'): Promise<string | null> {
   if (!ID.test(id)) return null;
-  const row = await env.DB.prepare(`SELECT ${col} v FROM fighters WHERE id = ?`).bind(id).first<{ v: string }>();
+  const expr = col === 'doc_all' ? 'COALESCE(doc_all, doc)' : col;
+  const row = await env.DB.prepare(`SELECT ${expr} v FROM fighters WHERE id = ?`).bind(id).first<{ v: string }>();
   return row?.v ?? null;
 }
 
-export async function getFighter(env: Env, id: string): Promise<Out> {
-  const doc = await fighterRow(env, id, 'doc');
+export async function getFighter(env: Env, id: string, p: URLSearchParams): Promise<Out> {
+  const doc = await fighterRow(env, id, includeAll(p) ? 'doc_all' : 'doc');
   return doc ? ok(doc) : notFound('Fighter');
 }
 
-export async function getFighterFights(env: Env, id: string): Promise<Out> {
-  const doc = await fighterRow(env, id, 'doc');
+export async function getFighterFights(env: Env, id: string, p: URLSearchParams): Promise<Out> {
+  const doc = await fighterRow(env, id, includeAll(p) ? 'doc_all' : 'doc');
   if (!doc) return notFound('Fighter');
   const f = JSON.parse(doc);
   return json({ id: f.id, name: f.name, total: f.fights.length, fights: f.fights });
@@ -205,15 +216,17 @@ export async function listEvents(env: Env, meta: Meta, p: URLSearchParams): Prom
   const offset = int(p, 'offset', 0, 0, 1_000_000);
   const year = p.get('year') ? int(p, 'year', 0, 1993, 2100) : null;
   const search = str(p, 'search');
+  const all = includeAll(p);
   if (!search && year === null) {
-    // seq is dense from 1 (oldest), so newest-first paging is an index range of exactly `limit` rows.
-    const top = meta.counts.events - offset;
-    const { results } = await env.DB.prepare('SELECT summary s FROM events WHERE seq <= ? ORDER BY seq DESC LIMIT ?')
-      .bind(top, limit)
+    // seq (every event) and ufc_seq (UFC list only, 0 otherwise) are dense from 1 = oldest, so newest-first paging
+    // is an index range of exactly `limit` rows.
+    const [n, col] = all ? [meta.counts.eventsAll, 'seq'] : [meta.counts.events, 'ufc_seq'];
+    const { results } = await env.DB.prepare(`SELECT summary s FROM events WHERE ${col} BETWEEN 1 AND ? ORDER BY ${col} DESC LIMIT ?`)
+      .bind(n - offset, limit)
       .all<{ s: string }>();
-    return ok(listBody(meta.counts.events, limit, offset, results));
+    return ok(listBody(n, limit, offset, results));
   }
-  const where: string[] = [];
+  const where: string[] = all ? [] : ['ufc = 1'];
   const binds: (string | number)[] = [];
   if (year !== null) {
     where.push('year = ?');
@@ -243,6 +256,7 @@ export async function getEvent(env: Env, id: string): Promise<Out> {
 export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Promise<Out> {
   const limit = int(p, 'limit', 50, 1, 200);
   const offset = int(p, 'offset', 0, 0, 1_000_000);
+  const all = includeAll(p);
   const where: string[] = [];
   const binds: (string | number)[] = [];
 
@@ -282,12 +296,13 @@ export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Prom
   }
 
   if (where.length === 0) {
-    const top = meta.counts.fights - offset;
-    const { results } = await env.DB.prepare('SELECT summary s FROM fights WHERE seq <= ? ORDER BY seq DESC LIMIT ?')
-      .bind(top, limit)
+    const [n, col] = all ? [meta.counts.fightsAll, 'seq'] : [meta.counts.fights, 'ufc_seq'];
+    const { results } = await env.DB.prepare(`SELECT summary s FROM fights WHERE ${col} BETWEEN 1 AND ? ORDER BY ${col} DESC LIMIT ?`)
+      .bind(n - offset, limit)
       .all<{ s: string }>();
-    return ok(listBody(meta.counts.fights, limit, offset, results));
+    return ok(listBody(n, limit, offset, results));
   }
+  if (!all) where.push('ufc = 1');
   const w = `WHERE ${where.join(' AND ')}`;
   const total = (await env.DB.prepare(`SELECT COUNT(*) n FROM fights ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0;
   const { results } = await env.DB.prepare(`SELECT summary s FROM fights ${w} ORDER BY seq DESC LIMIT ? OFFSET ?`)

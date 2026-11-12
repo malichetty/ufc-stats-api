@@ -3,6 +3,7 @@ const q = (name: string, description: string, type: 'string' | 'integer' = 'stri
   ({ name, in: 'query', required: false, description, schema: { type, ...extra } });
 const limit = (def: number, max: number) => q('limit', `Page size (max ${max} without a key)`, 'integer', { default: def, minimum: 1, maximum: max });
 const offset = q('offset', 'Rows to skip', 'integer', { default: 0, minimum: 0 });
+const include = q('include', '`ufc` (default): only events on ufcstats\' UFC list. `all`: also the events ufcstats lists only on fighter pages (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others).', 'string', { enum: ['ufc', 'all'], default: 'ufc' });
 
 const ok = (description: string, example?: unknown) => ({
   200: { description, content: { 'application/json': example ? { example } : {} } },
@@ -24,6 +25,7 @@ export function openapi(origin: string) {
       description:
         'Free API for every UFC event, fight, round and fighter on ufcstats.com, updated every Sunday after the Saturday card.\n\n' +
         'Limits: 60 requests a minute and 5,000 a day per IP. Send `X-API-Key` for 600 a minute and 100,000 a day.\n\n' +
+        'Lists cover UFC events by default. Add `include=all` for the other events ufcstats has stats for (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others); every event and fight carries `ufc: true|false`, and their IDs work directly either way.\n\n' +
         'IDs are the 16-character ufcstats IDs (for example Conor McGregor is `f4c49976c75c5ab2`). Percentages are fractions (0.49 = 49%).\n\n' +
         'Data from ufcstats.com; UFC data belongs to UFC/Zuffa LLC. For personal and non-commercial use.',
     },
@@ -41,20 +43,22 @@ export function openapi(origin: string) {
         q('stance', 'Orthodox, Southpaw, Switch, ...'),
         q('weight_class', 'Weight class of the fighter\'s latest UFC fight, e.g. Lightweight'),
         q('sort_by', 'name (default), or highest first: wins, losses, draws, slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def, sub_avg'),
-      ], 'Fighters with career stats and a compact UFC fight history. Sorted by last name unless `sort_by` is set.'),
+        include,
+      ], 'Fighters with career stats and a compact UFC fight history (`include=all` adds their other fights). Sorted by last name unless `sort_by` is set.'),
       '/api/fighters/compare': op('Fighters', 'Compare two fighters', [
         { ...q('fighter1', 'First fighter ID'), required: true },
         { ...q('fighter2', 'Second fighter ID'), required: true },
       ], 'Career stats side by side, with who has the edge on each.'),
-      '/api/fighters/{id}': op('Fighters', 'Fighter detail', [id('id', 'Fighter')],
+      '/api/fighters/{id}': op('Fighters', 'Fighter detail', [id('id', 'Fighter'), include],
         'Tale of the tape, career stats, champion flag and every UFC fight with method, round, time and the fighter\'s strike totals.',
         { id: 'f4c49976c75c5ab2', name: 'Conor McGregor', record: '22-7-0', wins: 22, losses: 7, draws: 0, height: '5\' 9"', weight: '155 lbs.', reach: '74"', stance: 'Southpaw', slpm: 5.27, str_acc: 0.49, td_avg: 0.66, fights: ['...'] }),
       '/api/fighters/{id}/stats': op('Fighters', 'Fighter career stats', [id('id', 'Fighter')], 'Record, striking, grappling and physical stats.'),
-      '/api/fighters/{id}/fights': op('Fighters', 'Fighter fight history', [id('id', 'Fighter')], 'Every UFC fight, newest first.'),
+      '/api/fighters/{id}/fights': op('Fighters', 'Fighter fight history', [id('id', 'Fighter'), include], 'Every UFC fight, newest first (`include=all` adds the rest).'),
       '/api/events': op('Events', 'List events', [
         limit(50, 200), offset,
         q('year', 'Only events in this year', 'integer'),
         q('search', 'Event name words, e.g. "ufc 229"'),
+        include,
       ], 'Completed UFC events, newest first.'),
       '/api/events/{id}': op('Events', 'Event detail', [id('id', 'Event')], 'Date, location and the full card in order (main event first), with results and bonuses.'),
       '/api/fights': op('Fights', 'List fights', [
@@ -64,6 +68,7 @@ export function openapi(origin: string) {
         q('fighter_id', 'Only this fighter\'s fights'),
         q('event_id', 'Only this event\'s fights'),
         q('weight_class', 'e.g. Lightweight, Women\'s Strawweight'),
+        include,
       ], 'Fights newest first, with whole-fight totals for both fighters.'),
       '/api/fights/{id}': op('Fights', 'Fight detail', [id('id', 'Fight')],
         'Method, round, time, time format, referee, details, bonuses, totals and round-by-round stats: knockdowns, significant and total strikes, takedowns, submission attempts, reversals, control time, and significant strikes by target (head, body, leg) and position (distance, clinch, ground).'),

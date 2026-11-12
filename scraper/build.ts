@@ -53,7 +53,11 @@ const resultWord: Record<string, string> = { W: 'win', L: 'loss', D: 'draw', NC:
 
 /** Build every D1 row from the Studio tables. Pure read; the caller diffs it against what was loaded. */
 export function build(db: DatabaseSync): Built {
-  const events = db.prepare(`SELECT * FROM events WHERE scraped_at IS NOT NULL ORDER BY date, id`).all() as Any[];
+  // Upcoming cards reach the table through fighter-profile links; they're served once they're on the completed list.
+  const events = db.prepare(
+    `SELECT * FROM events WHERE scraped_at IS NOT NULL AND id NOT IN (SELECT id FROM upcoming_events)
+       AND (date IS NULL OR date <= date('now')) ORDER BY date, id`,
+  ).all() as Any[];
   const eventById = new Map(events.map((e) => [e.id, e]));
   const fights = (db.prepare(`SELECT * FROM fights WHERE page_scraped_at IS NOT NULL`).all() as Any[])
     .filter((f) => eventById.has(f.event_id))
@@ -77,7 +81,10 @@ export function build(db: DatabaseSync): Built {
       : f;
   });
 
-  const eventRef = (e: Any) => ({ id: e.id, name: e.name, date: e.date, location: e.location });
+  const eventRef = (e: Any) => ({ id: e.id, name: e.name, date: e.date, location: e.location, ufc: !!e.listed });
+  // seq orders every event and fight; ufc_seq numbers only those on ufcstats' UFC list (0 for the rest), so the
+  // default UFC-only list pages through its own dense range.
+  let ufcFightSeq = 0;
 
   // ---- fights
   const fightRows: Row[] = [];
@@ -102,6 +109,7 @@ export function build(db: DatabaseSync): Built {
     };
     const summary = {
       id: f.id,
+      ufc: !!e.listed,
       event: eventRef(e),
       bout_order: f.bout_order,
       bout: f.bout,
@@ -134,6 +142,8 @@ export function build(db: DatabaseSync): Built {
     fightRows.push({
       id: f.id,
       seq: i + 1,
+      ufc_seq: e.listed ? ++ufcFightSeq : 0,
+      ufc: e.listed ? 1 : 0,
       event_id: f.event_id,
       date: e.date,
       fighter1_id: f.fighter1_id,
@@ -163,6 +173,7 @@ export function build(db: DatabaseSync): Built {
       const list = historyByFighter.get(me) ?? [];
       list.push({
         fight_id: f.id,
+        ufc: !!e.listed,
         event_id: e.id,
         event_name: e.name,
         date: e.date,
@@ -187,13 +198,16 @@ export function build(db: DatabaseSync): Built {
 
   // ---- events
   const eventTokenRows: Row[] = [];
+  let ufcEventSeq = 0;
   const eventRows: Row[] = events.map((e, i) => {
     for (const t of new Set(tokens(e.name))) eventTokenRows.push({ token: t, event_id: e.id });
     const card = (fightCards.get(e.id) ?? []).sort((a, b) => (a.bout_order ?? 0) - (b.bout_order ?? 0));
-    const summary = { id: e.id, name: e.name, date: e.date, location: e.location, fight_count: card.length };
+    const summary = { id: e.id, name: e.name, date: e.date, location: e.location, ufc: !!e.listed, fight_count: card.length };
     return {
       id: e.id,
       seq: i + 1,
+      ufc_seq: e.listed ? ++ufcEventSeq : 0,
+      ufc: e.listed ? 1 : 0,
       name: e.name,
       date: e.date,
       year: e.date ? Number(e.date.slice(0, 4)) : null,
@@ -206,7 +220,8 @@ export function build(db: DatabaseSync): Built {
   const fighterRows: Row[] = [];
   const nameTokenRows: Row[] = [];
   for (const p of fighters) {
-    const history = (historyByFighter.get(p.id) ?? []).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    const historyAll = (historyByFighter.get(p.id) ?? []).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    const history = historyAll.filter((h) => h.ufc);
     const wins = p.wins ?? 0, losses = p.losses ?? 0, draws = p.draws ?? 0;
     const summary = {
       id: p.id,
@@ -228,10 +243,13 @@ export function build(db: DatabaseSync): Built {
       td_avg: p.td_avg, td_acc: p.td_acc, td_def: p.td_def, sub_avg: p.sub_avg,
       ufc_fights: history.length,
     };
-    const compact = history.map((h) => ({
-      fight_id: h.fight_id, event_id: h.event_id, date: h.date, opponent_id: h.opponent_id, opponent: h.opponent,
-      result: h.result, method: h.method, round: h.round, time: h.time,
-    }));
+    const compact = (h: Any, flag: boolean) => ({
+      fight_id: h.fight_id, ...(flag ? { ufc: h.ufc } : {}), event_id: h.event_id, date: h.date,
+      opponent_id: h.opponent_id, opponent: h.opponent, result: h.result, method: h.method, round: h.round, time: h.time,
+    });
+    const url = `http://ufcstats.com/fighter-details/${p.id}`;
+    // Only fighters with fights outside the UFC list get a second, ?include=all version.
+    const other = historyAll.length > history.length;
     const sortName = `${p.last_name ?? p.name ?? ''} ${p.first_name ?? ''}`.toLowerCase().trim();
     fighterRows.push({
       id: p.id,
@@ -244,8 +262,10 @@ export function build(db: DatabaseSync): Built {
       is_champion: p.is_champion ? 1 : 0,
       slpm: p.slpm, str_acc: p.str_acc, sapm: p.sapm, str_def: p.str_def,
       td_avg: p.td_avg, td_acc: p.td_acc, td_def: p.td_def, sub_avg: p.sub_avg,
-      summary: JSON.stringify({ ...summary, fights: compact }),
-      doc: JSON.stringify({ ...summary, fights: history, url: `http://ufcstats.com/fighter-details/${p.id}` }),
+      summary: JSON.stringify({ ...summary, fights: history.map((h) => compact(h, false)) }),
+      doc: JSON.stringify({ ...summary, fights: history, url }),
+      summary_all: other ? JSON.stringify({ ...summary, other_fights: historyAll.length - history.length, fights: historyAll.map((h) => compact(h, true)) }) : null,
+      doc_all: other ? JSON.stringify({ ...summary, other_fights: historyAll.length - history.length, fights: historyAll, url }) : null,
     });
     for (const t of new Set([...tokens(p.name), ...tokens(p.first_name), ...tokens(p.last_name), ...tokens(p.nickname)])) {
       nameTokenRows.push({ token: t, fighter_id: p.id });
@@ -254,19 +274,27 @@ export function build(db: DatabaseSync): Built {
 
   const stance = (s: string) => fighters.filter((f) => (f.stance ?? '').toLowerCase() === s).length;
   const methods = [...new Set(fights.map((f) => f.method).filter(Boolean))].sort();
-  const roundRows = stats.filter((s) => s.round > 0).length;
+  const ufcEvents = events.filter((e) => e.listed);
+  const ufcFights = fights.filter((f) => eventById.get(f.event_id)!.listed);
+  const ufcFightIds = new Set(ufcFights.map((f) => f.id));
+  const roundRows = stats.filter((s) => s.round > 0 && ufcFightIds.has(s.fight_id)).length;
   const overview = {
     total_fighters: fighters.length,
-    total_events: events.length,
-    total_fights: fights.length,
+    total_events: ufcEvents.length,
+    total_fights: ufcFights.length,
     total_round_stat_rows: roundRows,
+    other_events: events.length - ufcEvents.length,
+    other_fights: fights.length - ufcFights.length,
+    other_round_stat_rows: stats.filter((s) => s.round > 0).length - roundRows,
     champions: fighters.filter((f) => f.is_champion).length,
-    latest_event: events.length ? eventRef(events[events.length - 1]) : null,
+    latest_event: ufcEvents.length ? eventRef(ufcEvents[ufcEvents.length - 1]) : null,
     stances: { orthodox: stance('orthodox'), southpaw: stance('southpaw'), switch: stance('switch') },
   };
   const meta: Row[] = [
-    { key: 'count_events', value: String(events.length) },
-    { key: 'count_fights', value: String(fights.length) },
+    { key: 'count_events', value: String(ufcEvents.length) },
+    { key: 'count_fights', value: String(ufcFights.length) },
+    { key: 'count_events_all', value: String(events.length) },
+    { key: 'count_fights_all', value: String(fights.length) },
     { key: 'count_fighters', value: String(fighters.length) },
     { key: 'methods', value: JSON.stringify(methods) },
     { key: 'overview', value: JSON.stringify(overview) },

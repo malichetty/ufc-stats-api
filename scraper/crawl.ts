@@ -56,6 +56,10 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
       ).run(e.id, e.name, e.date, e.location, now);
       enqueue(db, eventUrl(e.id));
     }
+    // A partial list (sample, --since) can't say an event dropped off, so only a whole list clears the flag.
+    const whole = opts.mode !== 'sample' && !opts.since;
+    db.prepare(`UPDATE events SET listed = (id IN (SELECT value FROM json_each(?1)))${whole ? '' : ' WHERE id IN (SELECT value FROM json_each(?1))'}`)
+      .run(JSON.stringify(listed.map((e) => e.id)));
     return;
   }
 
@@ -162,6 +166,15 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     ).run(p.id, p.name, p.nickname, p.record, p.wins, p.losses, p.draws, p.no_contests, p.height, p.height_inches,
       p.weight, p.weight_lbs, p.reach, p.reach_inches, p.stance, p.dob, p.slpm, p.str_acc, p.sapm, p.str_def,
       p.td_avg, p.td_acc, p.td_def, p.sub_avg, now);
+    // ufcstats leaves some events off its completed list (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC);
+    // a fighter's history is the only place that links them.
+    if (opts.mode !== 'sample') {
+      // Upcoming cards are linked too; they're fetched once they're on the completed list.
+      const known = db.prepare('SELECT 1 FROM events WHERE id = ?1 UNION ALL SELECT 1 FROM upcoming_events WHERE id = ?1');
+      for (const ev of new Set(Array.from(html.matchAll(/event-details\/([0-9a-f]{16})/g), (m) => m[1]))) {
+        if (!known.get(ev)) enqueue(db, eventUrl(ev));
+      }
+    }
   }
 }
 

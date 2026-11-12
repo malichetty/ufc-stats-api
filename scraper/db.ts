@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
   date TEXT,
   location TEXT,
   complete INTEGER NOT NULL DEFAULT 0,
+  listed INTEGER NOT NULL DEFAULT 0, -- on ufcstats' completed-events list; 0 = found only through a fighter profile
   first_seen_at TEXT NOT NULL,
   scraped_at TEXT
 );
@@ -138,6 +139,8 @@ export function openDb(dir = DATA_DIR): DatabaseSync {
   fs.mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, 'ufc.sqlite'));
   db.exec(SCHEMA);
+  const cols = (db.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map((c) => c.name);
+  if (!cols.includes('listed')) db.exec('ALTER TABLE events ADD COLUMN listed INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
