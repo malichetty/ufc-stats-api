@@ -1,4 +1,4 @@
--- Serving tables. The Studio builds every row (scraper/build.ts); the Worker only reads.
+-- Serving tables. The scraper builds every row (scraper/build.ts); the Worker only reads.
 -- `summary` and `doc` are finished JSON responses, so a detail request is one primary-key read.
 
 CREATE TABLE events (

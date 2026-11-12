@@ -12,7 +12,12 @@ export type Target = 'local' | 'remote';
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKER_DIR = path.join(REPO_ROOT, 'worker');
 export const D1_NAME = 'ufc-stats';
-export const ACCOUNT_ID = '50c7fea4e988671380a7ba6b6a4e54fd';
+/** The Cloudflare account, from the environment so it stays out of this public repo. */
+export function accountId(): string {
+  const id = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!id) throw new Error('set CLOUDFLARE_ACCOUNT_ID (the Cloudflare account that holds the Worker and D1)');
+  return id;
+}
 /** D1 refuses statements over 100 KB. */
 const MAX_STATEMENT_BYTES = 90_000;
 
@@ -140,7 +145,7 @@ export function runWrangler(args: string[], input?: string): string {
   const bin = path.join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
   return execFileSync(bin, args, {
     cwd: WORKER_DIR,
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID, WRANGLER_SEND_METRICS: 'false' },
+    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId(), WRANGLER_SEND_METRICS: 'false' },
     encoding: 'utf8',
     input,
     stdio: ['pipe', 'pipe', 'inherit'],

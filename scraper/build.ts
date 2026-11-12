@@ -51,7 +51,7 @@ function statLine(s: Any | undefined, name: string | null, id: string | null): A
 
 const resultWord: Record<string, string> = { W: 'win', L: 'loss', D: 'draw', NC: 'nc' };
 
-/** Build every D1 row from the Studio tables. Pure read; the caller diffs it against what was loaded. */
+/** Build every D1 row from the scraper tables. Pure read; the caller diffs it against what was loaded. */
 /** `live`: events already loaded to the target. They are never withdrawn, only updated once their pages are in. */
 export function build(db: DatabaseSync, live: Set<string> = new Set()): Built {
   // Upcoming cards reach the table through fighter-profile links; they're served once they're on the completed list.
