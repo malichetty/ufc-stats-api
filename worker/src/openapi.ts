@@ -1,7 +1,7 @@
 const id = (name: string, what: string) => ({ name, in: 'path', required: true, description: `${what} ID (16 hex characters, as on ufcstats.com)`, schema: { type: 'string', pattern: '^[0-9a-f]{16}$' } });
 const q = (name: string, description: string, type: 'string' | 'integer' = 'string', extra: Record<string, unknown> = {}) =>
   ({ name, in: 'query', required: false, description, schema: { type, ...extra } });
-const limit = (def: number, max: number) => q('limit', `Page size (max ${max} without a key)`, 'integer', { default: def, minimum: 1, maximum: max });
+const limit = (def: number, max: number) => q('limit', `Page size (max ${max})`, 'integer', { default: def, minimum: 1, maximum: max });
 const offset = q('offset', 'Rows to skip', 'integer', { default: 0, minimum: 0 });
 const include = q('include', '`ufc` (default): only events on ufcstats\' UFC list. `all`: also the events ufcstats lists only on fighter pages (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others).', 'string', { enum: ['ufc', 'all'], default: 'ufc' });
 

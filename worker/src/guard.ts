@@ -82,11 +82,12 @@ export async function enforce(env: Env, client: Client & { block: string }, orig
     'X-RateLimit-Limit-Day': String(client.perDay),
   };
 
-  if (client.block !== client.id && !(await env.RL_BLOCK.limit({ key: client.block })).success) {
-    return { blocked: tooMany('Too many requests from this network. Wait a minute.', 60, headers), headers };
-  }
   if (!(await env.RL_ANON.limit({ key: client.id })).success) {
     return { blocked: tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers), headers };
+  }
+  // After the per-IP check, so one noisy /64 can't fill its /48's bucket on its own.
+  if (client.block !== client.id && !(await env.RL_BLOCK.limit({ key: client.block })).success) {
+    return { blocked: tooMany('Too many requests from this network. Wait a minute.', 60, headers), headers };
   }
 
   if (client.perDay !== null) {

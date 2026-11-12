@@ -88,7 +88,7 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 - FR-1: Crawl list table `pages(url, kind, status, attempts, last_error, fetched_at)`. Raw pages go in `raw_pages(url, fetched_at, html_gz)`.
 - FR-2: Normalised Studio tables: `events`, `fights`, `fight_stats` (one row per fight, fighter and round; round 0 is the totals), `fighters`, `upcoming_events`, `flags`.
-- FR-3: D1 serving tables: `events`, `fights` and `fighters` (filter and sort columns plus `doc` and `summary` JSON), `name_tokens` (the fighter-name search index), `meta` and `api_keys`.
+- FR-3: D1 serving tables: `events`, `fights` and `fighters` (filter and sort columns plus `doc` and `summary` JSON), `name_tokens` (the fighter-name search index) and `meta`.
 - FR-4: Search uses `name_tokens` (word-prefix match on first name, last name and nickname words). No `LIKE '%x%'` scans.
 - FR-5: A fight-method filter matches `method` through the indexed `method_group` column.
 - FR-6: launchd jobs on the Studio: `weekly` (Sunday 14:00 and Monday 14:00, US Eastern) and `watchdog` (every 2 minutes). An install script writes the plists.
@@ -120,5 +120,5 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 ## 9. Open questions
 
-- Workers plan (Free or Paid): the answer sets the watchdog thresholds. My pick is Paid, with a 300,000-requests-a-day cutoff (9M a month for this API, under the 10M included that all of the account's Workers share).
+- Workers plan (Free or Paid): the answer sets the watchdog thresholds. Decided: Paid. The watchdog cutoff is 100,000 requests a day (3.1M a month, under a third of the 10M included that all of the account's Workers share).
 - The old admin key value: if Aris has it, set the same secret so the quiz keeps working untouched. If not, set a new one and update `UFC_API_KEY` on the two quiz Workers.

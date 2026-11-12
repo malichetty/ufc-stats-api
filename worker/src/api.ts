@@ -104,6 +104,7 @@ function maxLimit(client: Client, normal: number): number {
 export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, client: Client): Promise<Out> {
   const limit = int(p, 'limit', 50, 1, maxLimit(client, 500));
   const offset = int(p, 'offset', 0, 0, MAX_OFFSET);
+  const col = includeAll(p) ? 'COALESCE(summary_all, summary)' : 'summary';
   const where: string[] = [];
   const binds: (string | number)[] = [];
   const search = str(p, 'search');
@@ -140,7 +141,6 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
     ? ((await env.DB.prepare(`SELECT COUNT(*) n FROM fighters ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0)
     : meta.counts.fighters;
   if (offset >= total) return ok(listBody(total, limit, offset, []));
-  const col = includeAll(p) ? 'COALESCE(summary_all, summary)' : 'summary';
   const { results } = await env.DB.prepare(`SELECT ${col} s FROM fighters ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
     .bind(...binds, limit, offset)
     .all<{ s: string }>();
@@ -270,11 +270,8 @@ export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Prom
     const m = method.toLowerCase();
     const hits = meta.methods.filter((x) => x.toLowerCase().includes(m));
     if (hits.length === 0) return ok(listBody(0, limit, offset, []));
-    // A fragment that matches every method ("o") filters nothing; skip it rather than sort every fight.
-    if (hits.length < meta.methods.length) {
-      where.push(`method IN (${hits.map(() => '?').join(',')})`);
-      binds.push(...hits);
-    }
+    where.push(`method IN (${hits.map(() => '?').join(',')})`);
+    binds.push(...hits);
   }
   const fighterId = str(p, 'fighter_id');
   if (fighterId) {

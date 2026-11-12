@@ -107,7 +107,7 @@ test('a 404 page is gone: later runs do not fetch it again until it is flagged',
 
 test('equal numbers spelled differently share one cache key', async () => {
   const { canonical, paramCaps } = await import('../worker/src/api.ts');
-  const anon = { tier: 'anon' as const, id: '1.2.3.4', perDay: 5000, perMinute: 60 };
+  const anon = { tier: 'anon' as const, id: '1.2.3.4', perDay: 1000, perMinute: 30 };
   const key = (q: string) => {
     const url = new URL(`https://x/api/fighters?${q}`);
     return canonical(url, ['limit', 'offset'], paramCaps('/api/fighters', anon));

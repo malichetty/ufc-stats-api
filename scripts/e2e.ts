@@ -219,7 +219,8 @@ await check('Lists are UFC-only by default; include=all adds the events ufcstats
 });
 
 await check('A repeated request is served from the edge cache', async () => {
-  const path = `/api/fights?limit=3&offset=${Date.now() % 1_000_000}&method=dec`;
+  // Offsets are capped at 20,000, so stay under it for a key no earlier run has cached.
+  const path = `/api/fights?limit=3&offset=${Date.now() % 19_000}&method=dec`;
   const first = await get(path);
   assert.equal(first.headers.get('x-cache'), 'MISS');
   // The cache write finishes after the response; locally it can take a moment.
