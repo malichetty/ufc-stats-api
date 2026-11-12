@@ -236,3 +236,20 @@ test('a weekly run re-reads 100 known profiles, split between recent off-list fi
   assert.equal(pending(recent), 50, 'half from recent off-list fighters');
   assert.equal(pending(others), 50, 'half from everyone else, so they are not starved');
 });
+
+test('a card whose result-less fight is being fetched again is held back until the result is in', async () => {
+  const { build } = await import('../scraper/build.ts');
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const ev = '8888888888888888';
+  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace('November 07, 2026', 'November 07, 2020');
+  ingest(db, `http://ufcstats.com/event-details/${ev}`, page, opts);
+  const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
+  // Stored before its result was posted, and the refetch keeps failing.
+  db.prepare(`UPDATE fights SET page_scraped_at = '2020-11-07', fighter1_result = NULL, fighter2_result = NULL WHERE id = ?`).run(FIGHT);
+  db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
+  assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the result-less fight is retried');
+  db.prepare(`UPDATE fights SET fighter1_result = 'W', fighter2_result = 'L' WHERE id = ?`).run(FIGHT);
+  db.prepare(`UPDATE pages SET status = 'done' WHERE url = ?`).run(fightUrl);
+  assert.ok(build(db).events.some((e) => e.id === ev), 'published once the result is in');
+});
