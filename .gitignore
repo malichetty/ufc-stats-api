@@ -1,9 +1,6 @@
 # Data files (stored on server, not in repo)
 ufc_data/
 
-# Scraper (private - only API is public)
-ufc_scraper.py
-requirements-scraper.txt
 
 # Python
 __pycache__/
@@ -43,3 +40,8 @@ analytics.json
 
 # ESPN Exploration
 espn_exploration/
+# Node / Wrangler
+node_modules/
+worker/.wrangler/
+worker/.dev.vars
+.probe/

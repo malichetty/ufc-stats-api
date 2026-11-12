@@ -1,114 +1,85 @@
 # UFC Stats API
 
-A free REST API for UFC fighter stats, events, and fight data.
+A free REST API for every UFC event, fight, round and fighter on [ufcstats.com](http://ufcstats.com), updated every Sunday after the Saturday card.
 
-![API Documentation](docs/UFC_Stats_API_Swagger_UI.png)
-
-**Live API:** https://ufcapi.aristotle.me
-
-**Docs:** https://ufcapi.aristotle.me/docs
+**API:** https://ufcapi.aristotle.me · **Docs:** https://ufcapi.aristotle.me/docs
 
 ## Data
 
-- 4,400+ fighters with career stats and fight history
-- 750+ events with full fight cards
-- 8,500+ fights with round-by-round statistics
+- 796 events, from UFC 1 (1993) to the latest card
+- About 9,000 fights with method, round, time, time format, referee, details and bonuses
+- Round-by-round stats for both fighters: knockdowns, significant and total strikes, takedowns, submission attempts, reversals, control time, and significant strikes by target (head, body, leg) and position (distance, clinch, ground)
+- With `?include=all`: about 490 more events ufcstats has stats for but leaves off its UFC list (PRIDE, WEC, Strikeforce, Dana White's Contender Series, Road to UFC and others), with about 2,700 fights and the same round-by-round stats. Every event and fight carries `ufc: true|false`.
+- 4,628 fighters with tale of the tape (height, weight, reach, stance, date of birth), record, the 8 career stats, champion flag and UFC fight history
 
-## Features
+IDs are ufcstats' own 16-character IDs, so `f4c49976c75c5ab2` is Conor McGregor here and on ufcstats.com. Percentages are fractions (`0.49` is 49%).
 
-- **Rate Limiting**: 100 requests/day per IP (+ 100/min burst protection)
-- **Response Caching**: 5-minute cache for faster responses
-- **CORS Enabled**: Use from any frontend application
+## Limits
+
+Free, with no sign-up and no API key.
+
+| Per IP (IPv6: per /64) | Per minute | Per day |
+|---|---|---|
+| Everyone | 30 | about 1,000 (counted per Cloudflare data centre) |
+
+Past a limit you get `429` with a `Retry-After` header. Responses are cached at the edge for a week (each Sunday's update starts a new cache), and clients may reuse them for 5 minutes.
 
 ## Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | API info |
-| `GET /health` | Health check |
-| `GET /docs` | Interactive documentation |
-
-### Fighters
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/fighters` | List fighters (pagination, search, filters) |
-| `GET /api/fighters/{id}` | Fighter details with fight history |
-| `GET /api/fighters/{id}/stats` | Fighter career statistics |
-| `GET /api/fighters/compare?fighter1=ID&fighter2=ID` | Compare two fighters |
-
-### Events
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/events` | List all events |
-| `GET /api/events/{id}` | Event details with fight card |
-
-### Fights
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/fights` | List fights |
-| `GET /api/fights/{id}` | Fight details with round-by-round stats |
-
-### Stats
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/stats/leaders?stat=slpm` | Stat leaders (slpm, td_avg, wins, etc.) |
-| `GET /api/stats/overview` | Database overview |
-
-## Examples
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/fighters` | Fighters. Filters: `search`, `stance`, `weight_class`, `min_wins`, `sort_by`; paging: `limit`, `offset` |
+| `GET /api/fighters/{id}` | One fighter with full UFC fight history (`include=all` adds their other fights) |
+| `GET /api/fighters/{id}/stats` | Record, striking, grappling, physical |
+| `GET /api/fighters/{id}/fights` | Fight history only |
+| `GET /api/fighters/compare?fighter1=ID&fighter2=ID` | Two fighters side by side |
+| `GET /api/events` | Events, newest first. Filters: `year`, `search`, `include=all` |
+| `GET /api/events/{id}` | One event with its card in order |
+| `GET /api/fights` | Fights, newest first, with totals. Filters: `method`, `search`, `fighter_id`, `event_id`, `weight_class`, `include=all` |
+| `GET /api/fights/{id}` | One fight with round-by-round stats |
+| `GET /api/stats/leaders?stat=slpm` | Leaders for slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def, sub_avg or wins |
+| `GET /api/stats/overview` | Counts, champions, stances, last update |
+| `GET /health`, `GET /openapi.json`, `GET /docs` | Health, OpenAPI spec, Swagger UI |
 
 ```bash
-# List fighters
-curl https://ufcapi.aristotle.me/api/fighters?limit=10
-
-# Search for a fighter
-curl https://ufcapi.aristotle.me/api/fighters?search=mcgregor
-
-# Get fighter by ID
-curl https://ufcapi.aristotle.me/api/fighters/f4c49976c75c5ab2
-
-# Compare two fighters
+curl "https://ufcapi.aristotle.me/api/fighters?search=mcgregor"
+curl "https://ufcapi.aristotle.me/api/fights/3eea92e7f26fb05b"        # Khabib vs McGregor, round by round
 curl "https://ufcapi.aristotle.me/api/fighters/compare?fighter1=f4c49976c75c5ab2&fighter2=032cc3922d871c7f"
-
-# Get events
-curl https://ufcapi.aristotle.me/api/events?limit=5
-
-# Get fight details
-curl https://ufcapi.aristotle.me/api/fights/3eea92e7f26fb05b
-
-# Stat leaders
-curl https://ufcapi.aristotle.me/api/stats/leaders?stat=slpm&limit=10
+curl "https://ufcapi.aristotle.me/api/stats/leaders?stat=td_avg&limit=10"
 ```
 
-## Response Format
+## How it works
 
-All responses are JSON. Example fighter response:
-
-```json
-{
-  "id": "f4c49976c75c5ab2",
-  "name": "Conor McGregor",
-  "record": "22-6-0",
-  "wins": 22,
-  "losses": 6,
-  "draws": 0,
-  "height": "5' 9\"",
-  "weight": "155 lbs.",
-  "reach": "74\"",
-  "stance": "Southpaw",
-  "slpm": 5.32,
-  "str_acc": 0.49,
-  "td_avg": 0.67,
-  "fights": [...]
-}
 ```
+ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► Mac Studio SQLite ──(weekly SQL batch)──► Cloudflare D1 ◄── Worker ◄── edge cache ◄── you
+```
+
+- `scraper/`: runs on the Mac Studio. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
+- `worker/`: the Cloudflare Worker and D1 schema. The Studio prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
+- launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 2 minutes.
+
+### Operating it (Studio)
+
+```bash
+pnpm install && npx playwright install chromium
+pnpm crawl --full                 # first full crawl (~14,500 pages, ~12 h, resumable)
+pnpm crawl:status                 # pages done / pending / failed, time left
+pnpm weekly                       # what launchd runs: new events, their fights and fighters, list pages, flags, 100 known profiles
+pnpm flag http://ufcstats.com/fight-details/<id>   # fetch this page again on the next weekly run
+pnpm reparse                      # re-run the parsers over stored pages
+pnpm sync --target remote         # load what changed into D1
+node scraper/install-launchd.ts --target remote --plan paid   # install the weekly job and the watchdog
+pnpm dev                          # local Worker against the local D1
+pnpm e2e                          # end-to-end checks against `pnpm dev`
+```
+
+A change to the serving tables ships in this order: `wrangler d1 migrations apply ufc-stats --remote`, then `wrangler deploy`, then `pnpm sync --target remote`. Syncing first would let the old Worker page the new rows and cache the result under the new data version. A migration that drops something the live Worker still reads (like 0003, which drops `api_keys`) goes after `wrangler deploy` instead.
+
+Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 failures in a row, and doesn't retry harder.
 
 ## License
 
-For personal and non-commercial use. UFC data belongs to UFC/Zuffa LLC.
+For personal and non-commercial use. UFC data belongs to UFC/Zuffa LLC; stats come from ufcstats.com.
 
 ---
 

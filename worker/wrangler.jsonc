@@ -1,0 +1,33 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "ufc-stats-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // The custom domain is the only way in: no workers.dev URL, no preview URLs.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "ufcapi.aristotle.me", "custom_domain": true }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ufc-stats",
+      // Replaced with the real id when the database is created (needs Aris's yes).
+      "database_id": "8f18336a-6088-46ea-8c27-a2ed1776e702",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Burst catchers, counted by Cloudflare per server (loosely); guard.ts keeps the steady counts in the edge cache. No billing.
+  "ratelimits": [
+    { "name": "RL_ANON", "namespace_id": "4102", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_BLOCK", "namespace_id": "4105", "simple": { "limit": 120, "period": 60 } },
+    // The admin key: far above what the quiz Workers use, so a leaked key is still bounded.
+    { "name": "RL_ADMIN", "namespace_id": "4106", "simple": { "limit": 300, "period": 60 } }
+  ],
+  "vars": {
+    "ANON_PER_DAY": "1000",
+    "ANON_PER_MINUTE": "30",
+    // An IPv6 /48 (one tunnel or VPS allocation), so rotating /64s doesn't multiply the per-IP limit.
+    "BLOCK_PER_MINUTE": "120"
+  },
+  "observability": { "enabled": true, "head_sampling_rate": 0.01 }
+}
