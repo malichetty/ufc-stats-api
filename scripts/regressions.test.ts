@@ -153,3 +153,15 @@ test('an event ufcstats links only from fighter pages is fetched, and kept apart
   assert.equal(flag(listedId), 1);
   assert.equal(flag(hiddenId), 0);
 });
+
+test('a card that leaves the upcoming list without reaching the completed list is fetched', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const card = '4444444444444444';
+  const upcoming = (ids: string[]) => `<table>${ids.map((i) => `<tr class="b-statistics__table-row"><td>
+    <a href="http://ufcstats.com/event-details/${i}">Road to UFC</a><span class="b-statistics__date">December 01, 2099</span></td><td>Macau</td></tr>`).join('')}</table>`;
+  ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming([card]), opts);
+  assert.equal(db.prepare('SELECT 1 FROM pages WHERE url = ?').get(`http://ufcstats.com/event-details/${card}`), undefined);
+  ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming([]), opts);
+  assert.equal(status(db, `http://ufcstats.com/event-details/${card}`), 'pending');
+});

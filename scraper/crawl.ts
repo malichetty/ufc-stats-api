@@ -64,8 +64,15 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   }
 
   if (kind === 'upcoming_list') {
+    const upcoming = parseEventsList(html);
+    // Fighter-profile discovery skips upcoming cards, so a card that leaves this list without reaching the completed
+    // list (ufcstats merged Road to UFC 4.6 into another event) is fetched here instead.
+    const still = new Set(upcoming.map((e) => e.id));
+    for (const { id: gone } of db.prepare('SELECT id FROM upcoming_events WHERE id NOT IN (SELECT id FROM events)').all() as { id: string }[]) {
+      if (!still.has(gone)) enqueue(db, eventUrl(gone));
+    }
     db.exec('DELETE FROM upcoming_events');
-    for (const e of parseEventsList(html)) {
+    for (const e of upcoming) {
       db.prepare(`INSERT OR REPLACE INTO upcoming_events (id, name, date, location, seen_at) VALUES (?, ?, ?, ?, ?)`)
         .run(e.id, e.name, e.date, e.location, now);
     }
@@ -76,7 +83,9 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     for (const f of parseFighterList(html)) {
       db.prepare(`INSERT OR REPLACE INTO listed_fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)`)
         .run(f.id, f.first_name, f.last_name, f.nickname, f.is_champion ? 1 : 0);
-      if (opts.mode === 'full') enqueue(db, fighterUrl(f.id));
+      // Not forced: only fighters without a stored profile are fetched, and a new fighter's profile is how the
+      // weekly run finds a new Contender Series or Road to UFC card.
+      if (opts.mode !== 'sample') enqueue(db, fighterUrl(f.id));
     }
     return;
   }

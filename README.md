@@ -9,6 +9,7 @@ A free REST API for every UFC event, fight, round and fighter on [ufcstats.com](
 - 796 events, from UFC 1 (1993) to the latest card
 - About 9,000 fights with method, round, time, time format, referee, details and bonuses
 - Round-by-round stats for both fighters: knockdowns, significant and total strikes, takedowns, submission attempts, reversals, control time, and significant strikes by target (head, body, leg) and position (distance, clinch, ground)
+- With `?include=all`: about 490 more events ufcstats has stats for but leaves off its UFC list (PRIDE, WEC, Strikeforce, Dana White's Contender Series, Road to UFC and others), with about 2,700 fights and the same round-by-round stats. Every event and fight carries `ufc: true|false`.
 - 4,628 fighters with tale of the tape (height, weight, reach, stance, date of birth), record, the 8 career stats, champion flag and UFC fight history
 
 IDs are ufcstats' own 16-character IDs, so `f4c49976c75c5ab2` is Conor McGregor here and on ufcstats.com. Percentages are fractions (`0.49` is 49%).
@@ -27,13 +28,13 @@ Past a limit you get `429` with a `Retry-After` header. Responses are cached at 
 | Endpoint | What it returns |
 |---|---|
 | `GET /api/fighters` | Fighters. Filters: `search`, `stance`, `weight_class`, `min_wins`, `sort_by`; paging: `limit`, `offset` |
-| `GET /api/fighters/{id}` | One fighter with full UFC fight history |
+| `GET /api/fighters/{id}` | One fighter with full UFC fight history (`include=all` adds their other fights) |
 | `GET /api/fighters/{id}/stats` | Record, striking, grappling, physical |
 | `GET /api/fighters/{id}/fights` | Fight history only |
 | `GET /api/fighters/compare?fighter1=ID&fighter2=ID` | Two fighters side by side |
-| `GET /api/events` | Events, newest first. Filters: `year`, `search` |
+| `GET /api/events` | Events, newest first. Filters: `year`, `search`, `include=all` |
 | `GET /api/events/{id}` | One event with its card in order |
-| `GET /api/fights` | Fights, newest first, with totals. Filters: `method`, `search`, `fighter_id`, `event_id`, `weight_class` |
+| `GET /api/fights` | Fights, newest first, with totals. Filters: `method`, `search`, `fighter_id`, `event_id`, `weight_class`, `include=all` |
 | `GET /api/fights/{id}` | One fight with round-by-round stats |
 | `GET /api/stats/leaders?stat=slpm` | Leaders for slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def, sub_avg or wins |
 | `GET /api/stats/overview` | Counts, champions, stances, last update |
@@ -71,6 +72,8 @@ node scraper/install-launchd.ts --target remote --plan paid   # install the week
 pnpm dev                          # local Worker against the local D1
 pnpm e2e                          # end-to-end checks against `pnpm dev`
 ```
+
+A change to the serving tables ships in this order: `wrangler d1 migrations apply ufc-stats --remote`, then `wrangler deploy`, then `pnpm sync --target remote`. Syncing first would let the old Worker page the new rows and cache the result under the new data version.
 
 Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 failures in a row, and doesn't retry harder.
 

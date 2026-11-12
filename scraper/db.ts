@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { EVENTS_LIST_URL, parseEventsList } from './parse.ts';
 
 export const DATA_DIR = process.env.UFC_DATA_DIR ?? path.join(os.homedir(), 'ufc-stats-data');
 
@@ -140,7 +142,14 @@ export function openDb(dir = DATA_DIR): DatabaseSync {
   const db = new DatabaseSync(path.join(dir, 'ufc.sqlite'));
   db.exec(SCHEMA);
   const cols = (db.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map((c) => c.name);
-  if (!cols.includes('listed')) db.exec('ALTER TABLE events ADD COLUMN listed INTEGER NOT NULL DEFAULT 0');
+  if (!cols.includes('listed')) {
+    db.exec('ALTER TABLE events ADD COLUMN listed INTEGER NOT NULL DEFAULT 0');
+    // A warehouse from before the flag: set it from the stored completed list, so a sync before the next crawl
+    // doesn't publish every event as off the list.
+    const list = db.prepare('SELECT html_gz FROM raw_pages WHERE url = ?').get(EVENTS_LIST_URL) as { html_gz: Uint8Array } | undefined;
+    const ids = list ? parseEventsList(zlib.gunzipSync(list.html_gz).toString('utf8')).map((e) => e.id) : [];
+    db.prepare('UPDATE events SET listed = 1 WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids));
+  }
   return db;
 }
 

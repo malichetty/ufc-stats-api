@@ -70,8 +70,9 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 - [ ] *Verifiable:* the end-to-end script calls every route against `wrangler dev` and checks status and shape.
 
 ### US-007: Events off the UFC list
-- [ ] Every fighter profile the crawl reads queues the events it links that aren't stored yet (upcoming cards excepted), so the full crawl and the weekly run find them.
-- [ ] Events from the completed list are marked `listed`; the rest aren't. A whole-list read clears the mark from an event that drops off the list.
+- [ ] Every fighter profile the crawl reads queues the events it links that aren't stored yet (upcoming cards excepted; a card that leaves the upcoming list without reaching the completed list is fetched then). The weekly run reads the profile of every fighter on the a-z list that has none yet, which is how a new Contender Series or Road to UFC card is found.
+- [ ] Events from the completed list are marked `listed`; the rest aren't. A whole-list read clears the mark from an event that drops off the list. An existing warehouse gets the mark from its stored list page. `ufc` is `listed`, plus numbered "UFC N:" cards (ufcstats' list leaves out UFC 1).
+- [ ] Deploy order for a change to the serving tables: migration, then the Worker, then the sync, so the old Worker never pages the new rows.
 - [ ] `/api/events`, `/api/fights`, `/api/fighters`, `/api/fighters/{id}` and `/api/fighters/{id}/fights` return UFC-list data by default and everything with `include=all`. Detail routes answer for any ID. Default paging still reads only `limit` rows.
 - [ ] *Verifiable:* the end-to-end script checks both modes and the query plans; a regression test checks that a profile link queues an unlisted event.
 
