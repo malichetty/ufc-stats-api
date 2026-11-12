@@ -16,9 +16,10 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Request limits, counted by Cloudflare per data centre. No billing.
+  // Burst catchers, counted by Cloudflare per server (loosely); guard.ts keeps the steady counts in the edge cache. No billing.
   "ratelimits": [
     { "name": "RL_ANON", "namespace_id": "4102", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_BLOCK", "namespace_id": "4105", "simple": { "limit": 120, "period": 60 } },
     // The admin key: far above what the quiz Workers use, so a leaked key is still bounded.
     { "name": "RL_ADMIN", "namespace_id": "4106", "simple": { "limit": 300, "period": 60 } }
   ],

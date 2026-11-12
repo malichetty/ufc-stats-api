@@ -88,6 +88,10 @@ export async function enforce(env: Env, client: Client & { block: string }, orig
   if (!(await env.RL_ANON.limit({ key: client.id })).success) {
     return { blocked: tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers), headers };
   }
+  // Burst catcher for the /48, as RL_ANON is for the /64; the cache counter below is the steady bound.
+  if (client.block !== client.id && !(await env.RL_BLOCK.limit({ key: client.block })).success) {
+    return { blocked: tooMany('Too many requests from this network. Wait a minute.', 60, headers), headers };
+  }
   const now = Date.now();
   const minute = Math.floor(now / 60_000);
   const toNextMinute = Math.max(1, 60 - Math.floor((now % 60_000) / 1000));
@@ -105,15 +109,21 @@ export async function enforce(env: Env, client: Client & { block: string }, orig
       detail: `Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.` },
   ];
   const cache = caches.default;
-  const requestFor = (k: string) => new Request(`${origin}/${k.split('/').map(encodeURIComponent).join('/')}`);
+  // One scheme for every counter, so alternating http:// and https:// can't double a limit.
+  const base = origin.replace(/^http:/, 'https:');
+  const requestFor = (k: string) => new Request(`${base}/${k.split('/').map(encodeURIComponent).join('/')}`);
   const used = await Promise.all(counters.map(async (c) => {
     const hit = await cache.match(requestFor(c.key));
     return hit ? Number(await hit.text()) || 0 : 0;
   }));
-  headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay! - used[used.length - 1] - 1));
+  const usedToday = used[used.length - 1];
   for (let i = 0; i < counters.length; i++) {
-    if (used[i] >= counters[i].limit) return { blocked: tooMany(counters[i].detail, counters[i].ttl, headers), headers };
+    if (used[i] >= counters[i].limit) {
+      headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay! - usedToday));
+      return { blocked: tooMany(counters[i].detail, counters[i].ttl, headers), headers };
+    }
   }
+  headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay! - usedToday - 1));
   // Awaited, not deferred, to keep the read-then-write window short.
   await Promise.all(counters.map((c, i) =>
     cache.put(requestFor(c.key), new Response(String(used[i] + 1), { headers: { 'Cache-Control': `public, max-age=${c.ttl}` } }))));

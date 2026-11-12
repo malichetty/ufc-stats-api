@@ -105,6 +105,11 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
   const limit = int(p, 'limit', 50, 1, maxLimit(client, 500));
   const offset = int(p, 'offset', 0, 0, MAX_OFFSET);
   const col = includeAll(p) ? 'COALESCE(summary_all, summary)' : 'summary';
+  const minWins = p.get('min_wins') ? int(p, 'min_wins', 0, 0, 1000) : null;
+  const sortBy = str(p, 'sort_by');
+  if (sortBy && !(FIGHTER_SORTS as readonly string[]).includes(sortBy) && sortBy !== 'name') {
+    throw new HttpError(422, `sort_by must be one of: name, ${FIGHTER_SORTS.join(', ')}`);
+  }
   const where: string[] = [];
   const binds: (string | number)[] = [];
   const search = str(p, 'search');
@@ -115,7 +120,6 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
     where.push(`id IN (${t.sql})`);
     binds.push(...t.binds);
   }
-  const minWins = p.get('min_wins') ? int(p, 'min_wins', 0, 0, 1000) : null;
   if (minWins) {
     where.push('wins >= ?');
     binds.push(minWins);
@@ -129,10 +133,6 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
   if (wc) {
     where.push('weight_class = ? COLLATE NOCASE');
     binds.push(wc);
-  }
-  const sortBy = str(p, 'sort_by');
-  if (sortBy && !(FIGHTER_SORTS as readonly string[]).includes(sortBy) && sortBy !== 'name') {
-    throw new HttpError(422, `sort_by must be one of: name, ${FIGHTER_SORTS.join(', ')}`);
   }
   // A stat sort orders by the stat alone so SQLite walks that stat's index instead of sorting every fighter.
   const order = !sortBy || sortBy === 'name' ? 'sort_name, id' : `${sortBy} DESC`;
