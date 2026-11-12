@@ -279,4 +279,6 @@ test('fighter, fight and event pages that parse blank (a layout change) change n
   assert.equal((db.prepare('SELECT name FROM fighters WHERE id = ?').get(F1) as { name: string } | undefined)?.name, name);
   assert.throws(() => ingest(db, `http://ufcstats.com/fight-details/${FIGHT}`, blank, opts));
   assert.throws(() => ingest(db, `http://ufcstats.com/event-details/${EVENT}`, blank, opts));
+  const titleOnly = eventPage('win').replace(/<table>[\s\S]*<\/table>/, '<div>new card layout</div>');
+  assert.throws(() => ingest(db, `http://ufcstats.com/event-details/${EVENT}`, titleOnly, opts), /no fights/);
 });

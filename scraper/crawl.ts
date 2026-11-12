@@ -119,6 +119,8 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   if (kind === 'event') {
     const e = parseEvent(id, html);
     if (!e.name) unrecognised('event page', 'no event name');
+    // An upcoming card can be empty for a while; a card that already happened never is.
+    if (e.fights.length === 0 && e.date && e.date <= today()) unrecognised('event page', 'past event with no fights');
     const complete = e.fights.length > 0 && e.fights.every((f) => f.flags.length > 0);
     db.prepare(
       `INSERT INTO events (id, name, date, location, complete, first_seen_at, scraped_at) VALUES (?, ?, ?, ?, ?, ?, ?)
