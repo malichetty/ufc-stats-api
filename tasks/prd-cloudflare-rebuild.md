@@ -60,7 +60,7 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 
 ### US-004: Load to D1
 - [ ] The Studio marks changed rows (by content hash), writes them to one SQL file per load, and runs it with `wrangler d1 execute --file`. The target is set by `UFC_D1_TARGET`: `local`, `remote` or `none`.
-- [ ] Each load bumps `data_version` in the D1 `meta` table, so cached responses roll over within 2 minutes.
+- [ ] Each load bumps `data_version` in the D1 `meta` table, so the edge cache rolls over within 2 minutes (a client may keep reusing a response for up to 5 more, its `max-age`).
 - [ ] *Verifiable:* a load with nothing changed writes nothing and doesn't bump the version.
 
 ### US-005: Public API (Worker)

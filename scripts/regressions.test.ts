@@ -250,6 +250,11 @@ test('a card whose result-less fight is being fetched again is held back until t
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
   assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the result-less fight is retried');
   assert.ok(build(db, new Set([ev])).events.some((e) => e.id === ev), 'a card already live stays live while it retries');
+  // The real path: sync reads what is live on the target from `served` and must not delete the card.
+  const { sync } = await import('../scraper/sync.ts');
+  db.prepare(`INSERT OR REPLACE INTO served (target, tbl, id, hash) VALUES ('remote', 'events', ?, 'old')`).run(ev);
+  const res = sync(db, 'remote', { dryRun: true, log: () => {} });
+  assert.equal(res.deleted.events, 0, 'sync keeps the live card');
   db.prepare(`UPDATE fights SET fighter1_result = 'W', fighter2_result = 'L' WHERE id = ?`).run(FIGHT);
   db.prepare(`UPDATE pages SET status = 'done' WHERE url = ?`).run(fightUrl);
   assert.ok(build(db).events.some((e) => e.id === ev), 'published once the result is in');
