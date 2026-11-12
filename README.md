@@ -51,14 +51,14 @@ curl "https://ufcapi.aristotle.me/api/stats/leaders?stat=td_avg&limit=10"
 ## How it works
 
 ```
-ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► Mac Studio SQLite ──(weekly SQL batch)──► Cloudflare D1 ◄── Worker ◄── edge cache ◄── you
+ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► scraper SQLite ──(weekly SQL batch)──► Cloudflare D1 ◄── Worker ◄── edge cache ◄── you
 ```
 
-- `scraper/`: runs on the Mac Studio. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
-- `worker/`: the Cloudflare Worker and D1 schema. The Studio prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
+- `scraper/`: runs on a Mac. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
+- `worker/`: the Cloudflare Worker and D1 schema. The scraper prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
 - launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 2 minutes.
 
-### Operating it (Studio)
+### Operating it (scraper Mac)
 
 ```bash
 pnpm install && npx playwright install chromium
@@ -74,6 +74,8 @@ pnpm e2e                          # end-to-end checks against `pnpm dev`
 ```
 
 A change to the serving tables ships in this order: `wrangler d1 migrations apply ufc-stats --remote`, then `wrangler deploy`, then `pnpm sync --target remote`. Syncing first would let the old Worker page the new rows and cache the result under the new data version. A migration that drops something the live Worker still reads (like 0003, which drops `api_keys`) goes after `wrangler deploy` instead.
+
+Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
 
 Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 failures in a row, and doesn't retry harder.
 

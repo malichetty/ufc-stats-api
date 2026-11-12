@@ -1,5 +1,5 @@
 /**
- * Compares the Studio tables with the ufcstats pages they came from (the stored raw pages), and, with --full,
+ * Compares the scraper tables with the ufcstats pages they came from (the stored raw pages), and, with --full,
  * with the public reference dataset's totals (Greco1899/scrape_ufc_stats, 2026-11-08).
  *   UFC_DATA_DIR=... node scripts/verify-counts.ts [--full]
  */

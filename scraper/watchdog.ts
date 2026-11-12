@@ -4,13 +4,13 @@
  * and nothing more is billed; as a fallback it sets the D1 `kill` flag (the Worker answers 503). On the next UTC day,
  * once usage is back under the cap, it attaches the domain again.
  *
- * Uses the Studio's Wrangler login (no extra token). Plan presets: UFC_CF_PLAN=paid (default) or free.
+ * Uses this machine's Wrangler login (no extra token). Plan presets: UFC_CF_PLAN=paid (default) or free.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DATA_DIR } from './db.ts';
-import { ACCOUNT_ID, D1_NAME, runWrangler } from './sync.ts';
+import { accountId, D1_NAME, REPO_ROOT, runWrangler } from './sync.ts';
 
 const HOSTNAME = 'ufcapi.aristotle.me';
 const SCRIPT = 'ufc-stats-api';
@@ -32,7 +32,8 @@ const caps = {
 };
 
 const STATE = path.join(DATA_DIR, 'watchdog.json');
-const ALERT_DIR = path.join(os.homedir(), 'Inbox', 'out');
+/** UFC_ALERT_DIR: a folder the owner watches. */
+const ALERT_DIR = process.env.UFC_ALERT_DIR ?? path.join(DATA_DIR, 'alerts');
 const log = (m: string) => console.log(`[${new Date().toISOString()}] ${m}`);
 
 interface State { detachedOn: string | null; killSet: boolean }
@@ -65,7 +66,7 @@ async function cf(tok: string, method: string, p: string, body?: unknown): Promi
 }
 
 async function usage(tok: string, date: string, databaseId: string) {
-  const query = `{ viewer { accounts(filter: { accountTag: "${ACCOUNT_ID}" }) {
+  const query = `{ viewer { accounts(filter: { accountTag: "${accountId()}" }) {
     w: workersInvocationsAdaptive(limit: 10, filter: { date: "${date}", scriptName: "${SCRIPT}" }) { sum { requests } }
     d: d1AnalyticsAdaptiveGroups(limit: 10, filter: { date: "${date}", databaseId: "${databaseId}" }) { sum { rowsRead } }
   } } }`;
@@ -83,11 +84,12 @@ function alert(title: string, text: string) {
   try {
     fs.mkdirSync(ALERT_DIR, { recursive: true });
     fs.writeFileSync(path.join(ALERT_DIR, `UFC-API-${title.replace(/\W+/g, '-')}.txt`), `${new Date().toISOString()}\n${text}\n`);
-  } catch { /* Inbox may not exist on every machine */ }
+  } catch { /* the alert folder may not be writable */ }
 }
 
 function databaseId(): string {
-  const cfg = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'worker', 'wrangler.jsonc'), 'utf8');
+  // REPO_ROOT decodes the module URL; URL.pathname would keep a space in the folder name as %20.
+  const cfg = fs.readFileSync(path.join(REPO_ROOT, 'worker', 'wrangler.jsonc'), 'utf8');
   const m = cfg.match(/"database_id":\s*"([^"]+)"/);
   if (!m || /^0{8}-/.test(m[1])) throw new Error('worker/wrangler.jsonc has no real database_id yet (not deployed)');
   return m[1];
@@ -111,8 +113,8 @@ async function main() {
   if (over && !state.detachedOn) {
     let detached = false;
     try {
-      const domains = (await cf(tok, 'GET', `accounts/${ACCOUNT_ID}/workers/domains?hostname=${HOSTNAME}`)).result as { id: string }[];
-      for (const d of domains) await cf(tok, 'DELETE', `accounts/${ACCOUNT_ID}/workers/domains/${d.id}`);
+      const domains = (await cf(tok, 'GET', `accounts/${accountId()}/workers/domains?hostname=${HOSTNAME}`)).result as { id: string }[];
+      for (const d of domains) await cf(tok, 'DELETE', `accounts/${accountId()}/workers/domains/${d.id}`);
       detached = domains.length > 0;
     } catch (e) {
       log(`detach failed: ${(e as Error).message}`);
@@ -141,7 +143,7 @@ async function main() {
 
   if (state.detachedOn && state.detachedOn !== today && !over) {
     const zone = (await cf(tok, 'GET', `zones?name=${ZONE}`)).result[0];
-    await cf(tok, 'PUT', `accounts/${ACCOUNT_ID}/workers/domains`, {
+    await cf(tok, 'PUT', `accounts/${accountId()}/workers/domains`, {
       environment: 'production', hostname: HOSTNAME, service: SCRIPT, zone_id: zone.id,
     });
     if (state.killSet) setKill(false);

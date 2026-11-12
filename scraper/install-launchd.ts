@@ -1,6 +1,6 @@
 /**
- * Installs (or with --uninstall removes) the Studio's two launchd jobs, run from this checkout:
- *   me.aristotle.ufcstats.weekly    Sunday and Monday 14:00 local time (US Eastern on the Studio)
+ * Installs (or with --uninstall removes) the two launchd jobs on this Mac, run from this checkout:
+ *   me.aristotle.ufcstats.weekly    Sunday and Monday 14:00 local time (set the Mac to US Eastern)
  *   me.aristotle.ufcstats.watchdog  every 2 minutes
  * Usage: node scraper/install-launchd.ts --target remote --plan paid
  */
@@ -47,7 +47,7 @@ ${schedule}
 `;
 }
 
-// launchd runs a missed calendar job when the Mac wakes, so a Studio asleep at 14:00 still runs it.
+// launchd runs a missed calendar job when the Mac wakes, so a Mac asleep at 14:00 still runs it.
 const weeklySchedule = `  <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
@@ -55,8 +55,11 @@ const weeklySchedule = `  <key>StartCalendarInterval</key>
   </array>`;
 const watchdogSchedule = `  <key>StartInterval</key><integer>120</integer>`;
 
-const env = {
+if (!values.uninstall && !process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error('set CLOUDFLARE_ACCOUNT_ID before installing');
+const env: Record<string, string> = {
   PATH: `${path.dirname(process.execPath)}:/opt/homebrew/bin:/usr/bin:/bin`,
+  CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID ?? '',
+  ...(process.env.UFC_ALERT_DIR ? { UFC_ALERT_DIR: process.env.UFC_ALERT_DIR } : {}),
   UFC_DATA_DIR: DATA_DIR,
   UFC_D1_TARGET: values.target!,
   UFC_CF_PLAN: values.plan!,
