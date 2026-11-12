@@ -52,17 +52,20 @@ function statLine(s: Any | undefined, name: string | null, id: string | null): A
 const resultWord: Record<string, string> = { W: 'win', L: 'loss', D: 'draw', NC: 'nc' };
 
 /** Build every D1 row from the Studio tables. Pure read; the caller diffs it against what was loaded. */
-export function build(db: DatabaseSync): Built {
+/** `live`: events already loaded to the target. They are never withdrawn, only updated once their pages are in. */
+export function build(db: DatabaseSync, live: Set<string> = new Set()): Built {
   // Upcoming cards reach the table through fighter-profile links; they're served once they're on the completed list.
-  // A card waits while any of its fight pages is still pending or failing, so it never goes out missing a bout, or with
-  // a bout stored before its result was posted. A page ufcstats removed (404, 'gone') doesn't hold the card back.
+  // A new card waits while any of its fight pages is still pending or failing, so it never goes out missing a bout, or
+  // with a bout stored before its result was posted. A page ufcstats removed (404, 'gone') doesn't hold it back, and a
+  // card already live stays live rather than vanishing while a refetch retries.
   const events = db.prepare(
     `SELECT * FROM events WHERE scraped_at IS NOT NULL AND id NOT IN (SELECT id FROM upcoming_events)
        AND (date IS NULL OR date <= date('now'))
-       AND id NOT IN (SELECT f.event_id FROM fights f JOIN pages p ON p.url = 'http://ufcstats.com/fight-details/' || f.id
-                      WHERE (f.page_scraped_at IS NULL OR f.fighter1_result IS NULL) AND p.status IN ('pending', 'failed'))
+       AND (id IN (SELECT value FROM json_each(?))
+            OR id NOT IN (SELECT f.event_id FROM fights f JOIN pages p ON p.url = 'http://ufcstats.com/fight-details/' || f.id
+                          WHERE (f.page_scraped_at IS NULL OR f.fighter1_result IS NULL) AND p.status IN ('pending', 'failed')))
      ORDER BY date, id`,
-  ).all() as Any[];
+  ).all(JSON.stringify([...live])) as Any[];
   // ufcstats' completed list leaves out UFC 1, so a numbered UFC card counts as UFC wherever it was found.
   for (const e of events) e.ufc = !!e.listed || /^UFC \d+:/.test(e.name);
   const eventById = new Map(events.map((e) => [e.id, e]));

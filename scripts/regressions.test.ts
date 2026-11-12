@@ -249,6 +249,7 @@ test('a card whose result-less fight is being fetched again is held back until t
   db.prepare(`UPDATE fights SET page_scraped_at = '2020-11-07', fighter1_result = NULL, fighter2_result = NULL WHERE id = ?`).run(FIGHT);
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
   assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the result-less fight is retried');
+  assert.ok(build(db, new Set([ev])).events.some((e) => e.id === ev), 'a card already live stays live while it retries');
   db.prepare(`UPDATE fights SET fighter1_result = 'W', fighter2_result = 'L' WHERE id = ?`).run(FIGHT);
   db.prepare(`UPDATE pages SET status = 'done' WHERE url = ?`).run(fightUrl);
   assert.ok(build(db).events.some((e) => e.id === ev), 'published once the result is in');

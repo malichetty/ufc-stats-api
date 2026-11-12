@@ -62,7 +62,8 @@ export interface SyncResult {
  */
 export function sync(db: DatabaseSync, target: Target, opts: { log?: (m: string) => void; dryRun?: boolean } = {}): SyncResult {
   const log = opts.log ?? console.log;
-  const built = build(db);
+  const live = new Set((db.prepare(`SELECT id FROM served WHERE target = ? AND tbl = 'events'`).all(target) as { id: string }[]).map((r) => r.id));
+  const built = build(db, live);
   const served = new Map<string, string>();
   for (const r of db.prepare('SELECT tbl, id, hash FROM served WHERE target = ?').all(target) as { tbl: string; id: string; hash: string }[]) {
     served.set(`${r.tbl}:${r.id}`, r.hash);
