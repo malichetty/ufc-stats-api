@@ -188,3 +188,18 @@ test('one-at-a-time requests past 30 a minute are refused even when the rate-lim
   assert.deepEqual(statuses.slice(0, 30), Array(30).fill(200));
   assert.equal(statuses[30], 429);
 });
+
+test('a card whose fight page keeps failing is held back instead of going out missing that bout', async () => {
+  const { build } = await import('../scraper/build.ts');
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const ev = '5555555555555555';
+  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace('November 07, 2026', 'November 07, 2020');
+  ingest(db, `http://ufcstats.com/event-details/${ev}`, page, opts);
+  const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
+  db.prepare(`UPDATE fights SET page_scraped_at = NULL WHERE id = ?`).run(FIGHT);
+  db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
+  assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the fight page fails');
+  db.prepare(`UPDATE pages SET status = 'gone' WHERE url = ?`).run(fightUrl);
+  assert.ok(build(db).events.some((e) => e.id === ev), 'published once ufcstats has removed the page');
+});
