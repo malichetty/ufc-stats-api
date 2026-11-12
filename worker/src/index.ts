@@ -72,7 +72,7 @@ interface Route {
 const json = (v: unknown): Out => ({ status: 200, body: JSON.stringify(v) });
 
 const ROUTES: Route[] = [
-  { re: /^\/$/, params: [], static: true, handle: (_e, _m, _p, _c, _x, origin) => json(rootInfo(origin)) },
+  { re: /^\/$/, params: [], static: true, handle: (e, _m, _p, _c, _x, origin) => json(rootInfo(e, origin)) },
   {
     re: /^\/health$/,
     params: [],
@@ -102,16 +102,15 @@ const ROUTES: Route[] = [
   { re: /^\/api\/stats\/overview$/, params: [], handle: (_e, m) => overview(m) },
 ];
 
-function rootInfo(origin: string) {
+function rootInfo(env: Env, origin: string) {
   return {
     message: 'UFC Stats API',
     version: '2.0.0',
     docs: `${origin}/docs`,
     source: 'ufcstats.com, updated every Sunday after UFC cards',
     rate_limit: {
-      limit: '5,000 requests/day per IP',
-      burst: '60 requests/minute per IP',
-      need_more: 'Free API keys (600/minute, 100,000/day): https://aristotle.me',
+      limit: `${Number(env.ANON_PER_DAY).toLocaleString('en-US')} requests/day per IP`,
+      burst: `${env.ANON_PER_MINUTE} requests/minute per IP`,
     },
     endpoints: {
       fighters: '/api/fighters',
@@ -160,8 +159,7 @@ export default {
         return respond(req, 503, errorBody('The API is paused. Try again later.'), { 'Retry-After': '3600' });
       }
 
-      const client = await identify(req, env);
-      if (client instanceof Response) return client;
+      const client = identify(req, env);
       const limit = await enforce(env, client, origin);
       if (limit.blocked) return limit.blocked;
       const base = { ...limit.headers, 'X-Data-Version': meta.version };

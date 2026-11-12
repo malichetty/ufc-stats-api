@@ -232,11 +232,11 @@ await check('A repeated request is served from the edge cache', async () => {
   assert.deepEqual(second.body, first.body);
 });
 
-await check('Anonymous callers get 429 with Retry-After past 60 a minute', async () => {
+await check('Anonymous callers get 429 with Retry-After past 30 a minute', async () => {
   const ip = '203.0.113.77';
   let last = 0;
   let retryAfter: string | null = null;
-  for (let i = 0; i < 65; i++) {
+  for (let i = 0; i < 35; i++) {
     const r = await get('/api/stats/overview', { 'CF-Connecting-IP': ip });
     last = r.status;
     retryAfter = r.headers.get('retry-after');
@@ -244,6 +244,20 @@ await check('Anonymous callers get 429 with Retry-After past 60 a minute', async
   }
   assert.equal(last, 429);
   assert.equal(retryAfter, '60');
+});
+
+await check('Rotating /64s inside one IPv6 /48 hits the network limit; offsets past the end read nothing', async () => {
+  let last = 0;
+  for (let i = 0; i < 125 && last !== 429; i++) {
+    // 25 requests from each of five /64s: under the per-/64 limit, over the /48 one.
+    const ip = `2001:db8:77:${Math.floor(i / 25)}::${(i % 25) + 1}`;
+    last = (await get('/api/stats/overview', { 'CF-Connecting-IP': ip })).status;
+  }
+  assert.equal(last, 429);
+  const far = await get('/api/fights?offset=999999&limit=5&method=dec');
+  assert.equal(far.status, 200);
+  assert.equal(far.body.offset, 20000, 'offset is clamped');
+  assert.equal(far.body.data.length, 0);
 });
 
 await check('Admin key lifts the limits and the page-size cap; unknown keys count as anonymous', async () => {
@@ -254,7 +268,7 @@ await check('Admin key lifts the limits and the page-size cap; unknown keys coun
   const unknown = await get('/api/fighters?limit=10000', { 'X-API-Key': 'not-a-real-key' });
   assert.equal(unknown.status, 200);
   assert.equal(unknown.body.limit, 500);
-  assert.equal(unknown.headers.get('x-ratelimit-limit-minute'), '60');
+  assert.equal(unknown.headers.get('x-ratelimit-limit-minute'), '30');
 });
 
 await check('A new data version rolls the cache over', async () => {

@@ -18,7 +18,7 @@ The build session decided these:
 - Raw pages are kept: Every fetched page is stored gzipped in the Studio database, so a parser fix means re-parsing the stored pages, not re-crawling ufcstats.
 - The Worker serves prebuilt JSON: The Studio builds each fighter, event and fight response once per load and stores it in D1 next to the columns used for filtering and sorting. A detail request is one primary-key read.
 - The fighter list pages (26 pages, a to z) are fetched every week: They're the only place ufcstats shows the champion belt. That's 26 summary pages, not a re-scrape of fighter profiles.
-- Rate limits: 60 requests a minute and 5,000 a day per IP without a key. With a key it's 600 a minute and 100,000 a day. The admin key is unlimited. An unknown `X-API-Key` is treated as no key, not rejected, the same as the old API.
+- Rate limits (revised 2026-11-12, Aris: free for everyone, no user keys): 30 requests a minute and about 1,000 a day per IP (IPv6 per /64), plus 120 a minute per IPv6 /48. The daily count is per data centre and approximate; the minute limit is the hard bound. Only the admin key (the quiz Workers) gets more: 300 a minute. Any other `X-API-Key` is ignored.
 - Compatibility: the old admin header `X-API-Key` still lifts the limits. The quiz Workers (`ufc-quiz-proxy`, `ufc-api-proxy`) call `/api/fighters` with it.
 - Events off the UFC list (decided by Aris 2026-11-12): ufcstats links 486 more events only from fighter pages (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others), with about 2,700 fights and full round stats. They're scraped and served, but lists stay UFC-only unless `?include=all`, so the quiz sees the same data as before. Every event and fight carries `ufc: true|false`.
 - **The old Python API is removed** from the repo. It lives in git history, and the Worker replaces it.
@@ -79,9 +79,10 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 ### US-006: Cost and abuse guardrails
 - [ ] A per-IP limit (the Workers rate-limit binding) returns 429 with `Retry-After`. A per-IP daily allowance is counted in the edge cache, which is free, and is approximate per data centre. IPv6 addresses are counted per /64.
 - [ ] Responses are cached at the edge under a key that includes `data_version`. A cache hit does no D1 read.
-- [ ] The watchdog (Studio, every 10 minutes) reads the Worker's requests and D1 rows read for the day from Cloudflare's analytics API. Over the threshold, it detaches the custom domain, so requests fail before they reach the Worker and nothing is billed. It attaches it again at the next UTC midnight. A D1 `kill` flag (Worker answers 503) is the fallback.
+- [ ] The watchdog (Studio, every 2 minutes; caps 100k requests and 200M D1 rows read a day on Paid) reads the Worker's requests and D1 rows read for the day from Cloudflare's analytics API. Over the threshold, it detaches the custom domain, so requests fail before they reach the Worker and nothing is billed. It attaches it again at the next UTC midnight. A D1 `kill` flag (Worker answers 503) is the fallback.
 - [ ] `workers_dev` and preview URLs are off, so the only way in is the custom domain.
-- [ ] *Verifiable:* the end-to-end script sees a 429 after the burst limit, a cache HIT on a repeat request, and a new cache key after a version bump.
+- [ ] IPv6 callers are also limited per /48. `offset` is capped at 20,000, and a page past the end skips its query.
+- [ ] *Verifiable:* the end-to-end script sees a 429 after the burst limit and after rotating /64s inside one /48, a clamped offset, a cache HIT on a repeat request, and a new cache key after a version bump.
 
 ## 4. Functional requirements
 
@@ -90,12 +91,12 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 - FR-3: D1 serving tables: `events`, `fights` and `fighters` (filter and sort columns plus `doc` and `summary` JSON), `name_tokens` (the fighter-name search index), `meta` and `api_keys`.
 - FR-4: Search uses `name_tokens` (word-prefix match on first name, last name and nickname words). No `LIKE '%x%'` scans.
 - FR-5: A fight-method filter matches `method` through the indexed `method_group` column.
-- FR-6: launchd jobs on the Studio: `weekly` (Sunday 14:00 and Monday 14:00, US Eastern) and `watchdog` (every 10 minutes). An install script writes the plists.
+- FR-6: launchd jobs on the Studio: `weekly` (Sunday 14:00 and Monday 14:00, US Eastern) and `watchdog` (every 2 minutes). An install script writes the plists.
 
 ## 5. Non-goals
 
 - No upcoming-event cards in the API (the weekly job reads that list only for timing).
-- No self-serve key signup. Aris issues keys with `pnpm key:create`. A key sets its own daily allowance; the minute limit is the same for every key (the rate-limit binding has one limit per binding).
+- No API keys for users. The API is free for everyone; only the admin key exists, for Aris's quiz Workers.
 - No re-scraping of old fights for silent corrections, unless flagged.
 - No changes to the quiz Workers.
 

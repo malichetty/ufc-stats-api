@@ -33,6 +33,8 @@ const ID = /^[0-9a-f]{16}$/;
 const FIGHTER_SORTS = ['wins', 'losses', 'draws', 'slpm', 'str_acc', 'sapm', 'str_def', 'td_avg', 'td_acc', 'td_def', 'sub_avg'] as const;
 const LEADER_STATS = ['slpm', 'str_acc', 'sapm', 'str_def', 'td_avg', 'td_acc', 'td_def', 'sub_avg', 'wins'] as const;
 const MAX_SEARCH_WORDS = 4;
+/** Above every list's total (11,667 fights with include=all); keeps one query from having a million cache keys. */
+const MAX_OFFSET = 20_000;
 
 function int(p: URLSearchParams, name: string, def: number, min: number, max: number): number {
   const raw = p.get(name);
@@ -92,16 +94,16 @@ export function canonical(url: URL, allowed: string[], caps: Record<string, numb
 /** Largest value each whole-number parameter accepts, per route; `int()` below enforces the same numbers. */
 export function paramCaps(path: string, client: Client): Record<string, number> {
   const limit = path === '/api/fighters' ? maxLimit(client, 500) : path === '/api/stats/leaders' ? 50 : 200;
-  return { limit, offset: 1_000_000, year: 2100, min_wins: 1000, min_fights: 100 };
+  return { limit, offset: MAX_OFFSET, year: 2100, min_wins: 1000, min_fights: 100 };
 }
 
 function maxLimit(client: Client, normal: number): number {
-  return client.tier === 'admin' ? 10_000 : client.tier === 'key' ? Math.max(normal, 1000) : normal;
+  return client.tier === 'admin' ? 10_000 : normal;
 }
 
 export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, client: Client): Promise<Out> {
   const limit = int(p, 'limit', 50, 1, maxLimit(client, 500));
-  const offset = int(p, 'offset', 0, 0, 1_000_000);
+  const offset = int(p, 'offset', 0, 0, MAX_OFFSET);
   const where: string[] = [];
   const binds: (string | number)[] = [];
   const search = str(p, 'search');
@@ -137,6 +139,7 @@ export async function listFighters(env: Env, meta: Meta, p: URLSearchParams, cli
   const total = where.length
     ? ((await env.DB.prepare(`SELECT COUNT(*) n FROM fighters ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0)
     : meta.counts.fighters;
+  if (offset >= total) return ok(listBody(total, limit, offset, []));
   const col = includeAll(p) ? 'COALESCE(summary_all, summary)' : 'summary';
   const { results } = await env.DB.prepare(`SELECT ${col} s FROM fighters ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
     .bind(...binds, limit, offset)
@@ -213,7 +216,7 @@ export async function compareFighters(env: Env, p: URLSearchParams): Promise<Out
 
 export async function listEvents(env: Env, meta: Meta, p: URLSearchParams): Promise<Out> {
   const limit = int(p, 'limit', 50, 1, 200);
-  const offset = int(p, 'offset', 0, 0, 1_000_000);
+  const offset = int(p, 'offset', 0, 0, MAX_OFFSET);
   const year = p.get('year') ? int(p, 'year', 0, 1993, 2100) : null;
   const search = str(p, 'search');
   const all = includeAll(p);
@@ -241,6 +244,7 @@ export async function listEvents(env: Env, meta: Meta, p: URLSearchParams): Prom
   }
   const w = `WHERE ${where.join(' AND ')}`;
   const total = (await env.DB.prepare(`SELECT COUNT(*) n FROM events ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0;
+  if (offset >= total) return ok(listBody(total, limit, offset, []));
   const { results } = await env.DB.prepare(`SELECT summary s FROM events ${w} ORDER BY seq DESC LIMIT ? OFFSET ?`)
     .bind(...binds, limit, offset)
     .all<{ s: string }>();
@@ -255,7 +259,7 @@ export async function getEvent(env: Env, id: string): Promise<Out> {
 
 export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Promise<Out> {
   const limit = int(p, 'limit', 50, 1, 200);
-  const offset = int(p, 'offset', 0, 0, 1_000_000);
+  const offset = int(p, 'offset', 0, 0, MAX_OFFSET);
   const all = includeAll(p);
   const where: string[] = [];
   const binds: (string | number)[] = [];
@@ -266,8 +270,11 @@ export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Prom
     const m = method.toLowerCase();
     const hits = meta.methods.filter((x) => x.toLowerCase().includes(m));
     if (hits.length === 0) return ok(listBody(0, limit, offset, []));
-    where.push(`method IN (${hits.map(() => '?').join(',')})`);
-    binds.push(...hits);
+    // A fragment that matches every method ("o") filters nothing; skip it rather than sort every fight.
+    if (hits.length < meta.methods.length) {
+      where.push(`method IN (${hits.map(() => '?').join(',')})`);
+      binds.push(...hits);
+    }
   }
   const fighterId = str(p, 'fighter_id');
   if (fighterId) {
@@ -305,6 +312,7 @@ export async function listFights(env: Env, meta: Meta, p: URLSearchParams): Prom
   if (!all) where.push('ufc = 1');
   const w = `WHERE ${where.join(' AND ')}`;
   const total = (await env.DB.prepare(`SELECT COUNT(*) n FROM fights ${w}`).bind(...binds).first<{ n: number }>())?.n ?? 0;
+  if (offset >= total) return ok(listBody(total, limit, offset, []));
   const { results } = await env.DB.prepare(`SELECT summary s FROM fights ${w} ORDER BY seq DESC LIMIT ? OFFSET ?`)
     .bind(...binds, limit, offset)
     .all<{ s: string }>();

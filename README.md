@@ -16,10 +16,11 @@ IDs are ufcstats' own 16-character IDs, so `f4c49976c75c5ab2` is Conor McGregor 
 
 ## Limits
 
-| Caller | Per minute | Per day |
+Free, with no sign-up and no API key.
+
+| Per IP (IPv6: per /64) | Per minute | Per day |
 |---|---|---|
-| No key (per IP) | 60 | 5,000 |
-| Free API key (`X-API-Key` header) | 600 | 100,000 |
+| Everyone | 30 | about 1,000 (counted per Cloudflare data centre) |
 
 Past a limit you get `429` with a `Retry-After` header. Responses are cached at the edge for a week (each Sunday's update starts a new cache), and clients may reuse them for 5 minutes.
 
@@ -55,7 +56,7 @@ ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► Mac Studio SQLi
 
 - `scraper/`: runs on the Mac Studio. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
 - `worker/`: the Cloudflare Worker and D1 schema. The Studio prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
-- launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 10 minutes.
+- launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 2 minutes.
 
 ### Operating it (Studio)
 
@@ -67,7 +68,6 @@ pnpm weekly                       # what launchd runs: new events, their fights 
 pnpm flag http://ufcstats.com/fight-details/<id>   # fetch this page again on the next weekly run
 pnpm reparse                      # re-run the parsers over stored pages
 pnpm sync --target remote         # load what changed into D1
-pnpm key:create "<who>" --target remote            # issue a free API key (shown once)
 node scraper/install-launchd.ts --target remote --plan paid   # install the weekly job and the watchdog
 pnpm dev                          # local Worker against the local D1
 pnpm e2e                          # end-to-end checks against `pnpm dev`

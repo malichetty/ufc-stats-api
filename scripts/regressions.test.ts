@@ -117,19 +117,18 @@ test('equal numbers spelled differently share one cache key', async () => {
   assert.equal(key('limit=9999'), key('limit=500'), 'over the cap is clamped to the cap');
 });
 
-test('an unknown API key is not looked up in D1 once the IP is over its ceiling', async () => {
+test('an unknown API key never reads D1 and counts as anonymous', async () => {
   const { identify } = await import('../worker/src/guard.ts');
   let d1Reads = 0;
   const env = {
-    RL_CEILING: { limit: async () => ({ success: false }) },
-    RL_ANON: { limit: async () => ({ success: false }) },
-    RL_KEY: { limit: async () => ({ success: false }) },
     DB: { prepare: () => { d1Reads++; return { bind: () => ({ first: async () => null }) }; } },
-    ANON_PER_DAY: '5000', ANON_PER_MINUTE: '60', KEY_PER_MINUTE: '600',
+    ADMIN_API_KEY: 'the-admin-key', ANON_PER_DAY: '1000', ANON_PER_MINUTE: '60',
   } as any;
   for (let i = 0; i < 3; i++) {
     const req = new Request('https://x/api/fighters', { headers: { 'X-API-Key': `random-${i}`, 'CF-Connecting-IP': '203.0.113.5' } });
-    await identify(req, env);
+    const c = identify(req, env);
+    assert.equal(c.tier, 'anon');
+    assert.equal(c.id, '203.0.113.5');
   }
   assert.equal(d1Reads, 0);
 });

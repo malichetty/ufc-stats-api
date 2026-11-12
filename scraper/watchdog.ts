@@ -1,5 +1,5 @@
 /**
- * Usage watchdog (launchd, every 10 minutes). Reads today's Worker requests and D1 rows read from Cloudflare's
+ * Usage watchdog (launchd, every 2 minutes). Reads today's Worker requests and D1 rows read from Cloudflare's
  * analytics API. Over the cap, it detaches the custom domain, so requests fail at DNS before they reach the Worker
  * and nothing more is billed; as a fallback it sets the D1 `kill` flag (the Worker answers 503). On the next UTC day,
  * once usage is back under the cap, it attaches the domain again.
@@ -17,10 +17,11 @@ const SCRIPT = 'ufc-stats-api';
 const ZONE = 'aristotle.me';
 
 const PRESETS = {
-  // Paid: 10M requests/month and 25B D1 rows read/month are included, shared by every Worker on the account.
-  // 300k a day (9M in a 30-day month) and 750M rows a day keep this API alone under that; the other Workers here
-  // are small today. Traffic between two checks (10 minutes plus the analytics delay) can still get past a cap.
-  paid: { requests: 300_000, rowsRead: 750_000_000 },
+  // Paid: 10M requests/month and 25B D1 rows read/month are included, shared by every Worker on the account (the
+  // others used ~100k requests in the 30 days to 2026-11-12). 100k a day (3.1M a month) and 200M rows a day (6.2B)
+  // leave this API under a third of each even if it hits the cap every day. Traffic between two checks (2 minutes
+  // plus the analytics delay) can still get past a cap.
+  paid: { requests: 100_000, rowsRead: 200_000_000 },
   // Free: the account shares 100,000 requests/day and 5M D1 rows read/day across all its Workers. Stop at half.
   free: { requests: 50_000, rowsRead: 2_500_000 },
 };
@@ -127,7 +128,7 @@ async function main() {
     }
     if (!detached && !killSet) {
       alert('PAUSE-FAILED', `Usage over the daily cap (${now.requests} requests, ${now.rowsRead} D1 rows read) and neither ` +
-        `the domain detach nor the D1 kill flag worked. Detach ${HOSTNAME} in the Cloudflare dashboard. The watchdog tries again in 10 minutes.`);
+        `the domain detach nor the D1 kill flag worked. Detach ${HOSTNAME} in the Cloudflare dashboard. The watchdog tries again in 2 minutes.`);
       process.exitCode = 1;
       return;
     }
@@ -157,6 +158,6 @@ async function main() {
 
 main().catch((e) => {
   // Without usage numbers the watchdog can't tell whether to pause, so it says so instead of guessing.
-  alert('WATCHDOG-FAILED', `The usage check failed: ${(e as Error).message}. It runs again in 10 minutes.`);
+  alert('WATCHDOG-FAILED', `The usage check failed: ${(e as Error).message}. It runs again in 2 minutes.`);
   process.exitCode = 1;
 });

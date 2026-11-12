@@ -16,16 +16,17 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Per-IP and per-key request limits, counted by Cloudflare per data centre. No billing.
+  // Request limits, counted by Cloudflare per data centre. No billing.
   "ratelimits": [
-    { "name": "RL_CEILING", "namespace_id": "4101", "simple": { "limit": 600, "period": 60 } },
-    { "name": "RL_ANON", "namespace_id": "4102", "simple": { "limit": 60, "period": 60 } },
-    { "name": "RL_KEY", "namespace_id": "4103", "simple": { "limit": 600, "period": 60 } }
+    { "name": "RL_ANON", "namespace_id": "4102", "simple": { "limit": 30, "period": 60 } },
+    // An IPv6 /48 (one tunnel or VPS allocation), so rotating /64s doesn't multiply the per-IP limit.
+    { "name": "RL_BLOCK", "namespace_id": "4105", "simple": { "limit": 120, "period": 60 } },
+    // The admin key: far above what the quiz Workers use, so a leaked key is still bounded.
+    { "name": "RL_ADMIN", "namespace_id": "4106", "simple": { "limit": 300, "period": 60 } }
   ],
   "vars": {
-    "ANON_PER_DAY": "5000",
-    "ANON_PER_MINUTE": "60",
-    "KEY_PER_MINUTE": "600"
+    "ANON_PER_DAY": "1000",
+    "ANON_PER_MINUTE": "30"
   },
   "observability": { "enabled": true, "head_sampling_rate": 0.01 }
 }

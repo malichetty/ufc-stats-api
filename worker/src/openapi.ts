@@ -24,16 +24,12 @@ export function openapi(origin: string) {
       version: '2.0.0',
       description:
         'Free API for every UFC event, fight, round and fighter on ufcstats.com, updated every Sunday after the Saturday card.\n\n' +
-        'Limits: 60 requests a minute and 5,000 a day per IP. Send `X-API-Key` for 600 a minute and 100,000 a day.\n\n' +
+        'Free, no key needed. Limits per IP: 30 requests a minute and about 1,000 a day; past either you get 429 with `Retry-After`. Responses are cached, so repeat requests are fast.\n\n' +
         'Lists cover UFC events by default. Add `include=all` for the other events ufcstats has stats for (PRIDE, WEC, Strikeforce, Contender Series, Road to UFC and others); every event and fight carries `ufc: true|false`, and their IDs work directly either way.\n\n' +
         'IDs are the 16-character ufcstats IDs (for example Conor McGregor is `f4c49976c75c5ab2`). Percentages are fractions (0.49 = 49%).\n\n' +
         'Data from ufcstats.com; UFC data belongs to UFC/Zuffa LLC. For personal and non-commercial use.',
     },
     servers: [{ url: origin }],
-    components: {
-      securitySchemes: { ApiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' } },
-    },
-    security: [{}, { ApiKey: [] }],
     tags: [{ name: 'Fighters' }, { name: 'Events' }, { name: 'Fights' }, { name: 'Stats' }, { name: 'System' }],
     paths: {
       '/api/fighters': op('Fighters', 'List fighters', [

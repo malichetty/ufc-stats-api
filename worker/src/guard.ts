@@ -4,23 +4,14 @@
  * cache reads and writes are free, so counting costs nothing, at the price of being per data centre and approximate.
  */
 
-export type Tier = 'anon' | 'key' | 'admin';
+export type Tier = 'anon' | 'admin';
 
 export interface Client {
   tier: Tier;
-  /** IP (IPv6 by /64) for anonymous callers, a key-hash prefix for key holders */
+  /** IP (IPv6 by /64) for anonymous callers */
   id: string;
   perDay: number | null;
   perMinute: number | null;
-}
-
-const KEY_CACHE_MS = 5 * 60_000;
-const KEY_CACHE_MAX = 1000;
-const keyMemo = new Map<string, { at: number; perDay: number | null }>();
-
-async function sha256(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function sameString(a: string, b: string): boolean {
@@ -30,10 +21,7 @@ function sameString(a: string, b: string): boolean {
   return crypto.subtle.timingSafeEqual(ea, eb);
 }
 
-export function ipOf(req: Request): string {
-  const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
-  if (!ip.includes(':')) return ip;
-  // One IPv6 customer usually holds a whole /64; counting per address would let them rotate past the limit.
+function ipv6Groups(ip: string): string[] {
   const parts = ip.split(':');
   const full: string[] = [];
   for (let i = 0; i < parts.length; i++) {
@@ -41,19 +29,19 @@ export function ipOf(req: Request): string {
       full.push(...Array(8 - parts.filter(Boolean).length).fill('0'));
     } else if (parts[i] !== '') full.push(parts[i]);
   }
-  return full.slice(0, 4).join(':') + '::/64';
+  return full;
 }
 
-async function keyPerDay(env: Env, keyHash: string): Promise<number | null | undefined> {
-  const memo = keyMemo.get(keyHash);
-  if (memo && Date.now() - memo.at < KEY_CACHE_MS) return memo.perDay ?? undefined;
-  const row = await env.DB.prepare('SELECT per_day, disabled FROM api_keys WHERE key_hash = ?')
-    .bind(keyHash)
-    .first<{ per_day: number; disabled: number }>();
-  const perDay = row && !row.disabled ? row.per_day : null;
-  if (keyMemo.size >= KEY_CACHE_MAX) keyMemo.clear();
-  keyMemo.set(keyHash, { at: Date.now(), perDay });
-  return perDay ?? undefined;
+/** One IPv6 customer usually holds a whole /64; counting per address would let them rotate past the limit. */
+export function ipOf(req: Request): string {
+  const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+  return ip.includes(':') ? ipv6Groups(ip).slice(0, 4).join(':') + '::/64' : ip;
+}
+
+/** A free tunnel hands out a /48 (65,536 /64s), so IPv6 also gets a wider bucket. IPv4 stays per address. */
+export function blockOf(req: Request): string {
+  const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+  return ip.includes(':') ? ipv6Groups(ip).slice(0, 3).join(':') + '::/48' : ip;
 }
 
 const tooMany = (detail: string, retryAfter: number, headers: Record<string, string> = {}) =>
@@ -62,27 +50,13 @@ const tooMany = (detail: string, retryAfter: number, headers: Record<string, str
     headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Retry-After': String(retryAfter), ...headers },
   });
 
-/**
- * Admin first (a string compare), then a per-IP ceiling, and only then the D1 key lookup, so sending a new random
- * key on every request can't turn into unlimited D1 reads.
- */
-export async function identify(req: Request, env: Env): Promise<Client | Response> {
+/** The admin key (the owner's quiz Workers) is unlimited; everyone else is counted per IP. Any other key is ignored. */
+export function identify(req: Request, env: Env): Client & { block: string } {
   const key = req.headers.get('X-API-Key');
   if (key && env.ADMIN_API_KEY && sameString(key, env.ADMIN_API_KEY)) {
-    return { tier: 'admin', id: 'admin', perDay: null, perMinute: null };
+    return { tier: 'admin', id: 'admin', block: 'admin', perDay: null, perMinute: null };
   }
-  if (!(await env.RL_CEILING.limit({ key: ipOf(req) })).success) {
-    return tooMany('Too many requests from this address. Wait a minute.', 60);
-  }
-  if (key && key.length <= 200) {
-    const keyHash = await sha256(key);
-    const perDay = await keyPerDay(env, keyHash);
-    if (perDay !== undefined) {
-      return { tier: 'key', id: `key:${keyHash.slice(0, 16)}`, perDay, perMinute: Number(env.KEY_PER_MINUTE) };
-    }
-  }
-  // An unknown key is treated as no key, as the old API did.
-  return { tier: 'anon', id: ipOf(req), perDay: Number(env.ANON_PER_DAY), perMinute: Number(env.ANON_PER_MINUTE) };
+  return { tier: 'anon', id: ipOf(req), block: blockOf(req), perDay: Number(env.ANON_PER_DAY), perMinute: Number(env.ANON_PER_MINUTE) };
 }
 
 export interface LimitResult {
@@ -96,16 +70,22 @@ const secondsToUtcMidnight = () => {
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
 };
 
-export async function enforce(env: Env, client: Client, origin: string): Promise<LimitResult> {
-  if (client.tier === 'admin') return { blocked: null, headers: {} };
+export async function enforce(env: Env, client: Client & { block: string }, origin: string): Promise<LimitResult> {
+  // The quiz Workers need far less than this; it only bounds what a leaked admin key could do.
+  if (client.tier === 'admin') {
+    const ok = (await env.RL_ADMIN.limit({ key: 'admin' })).success;
+    return { blocked: ok ? null : tooMany('Admin limit reached. Wait a minute.', 60), headers: {} };
+  }
 
   const headers: Record<string, string> = {
     'X-RateLimit-Limit-Minute': String(client.perMinute),
     'X-RateLimit-Limit-Day': String(client.perDay),
   };
 
-  const minute = client.tier === 'key' ? env.RL_KEY : env.RL_ANON;
-  if (!(await minute.limit({ key: client.id })).success) {
+  if (client.block !== client.id && !(await env.RL_BLOCK.limit({ key: client.block })).success) {
+    return { blocked: tooMany('Too many requests from this network. Wait a minute.', 60, headers), headers };
+  }
+  if (!(await env.RL_ANON.limit({ key: client.id })).success) {
     return { blocked: tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers), headers };
   }
 

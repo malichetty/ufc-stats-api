@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { BlockedError, drain, enqueue, reparse, seed, status, unpublished, type CrawlOptions } from './crawl.ts';
 import { nowIso, openDb } from './db.ts';
 import { kindOf } from './parse.ts';
-import { runWrangler, sync, D1_NAME, type Target } from './sync.ts';
+import { sync, type Target } from './sync.ts';
 
 const EXIT_BLOCKED = 2;
 /** sysexits EX_TEMPFAIL: results not published yet; the retry run picks it up. */
@@ -23,7 +22,6 @@ const { positionals, values } = parseArgs({
     target: { type: 'string' },
     'max-pages': { type: 'string' },
     'dry-run': { type: 'boolean' },
-    'per-day': { type: 'string' },
   },
 });
 const [command, arg] = positionals;
@@ -153,20 +151,8 @@ async function main(): Promise<number> {
       sync(openDb(), target, { log, dryRun: values['dry-run'] });
       return 0;
     }
-    case 'key:create': {
-      const target = d1Target();
-      if (!arg || !target) throw new Error('usage: key:create <label> --target local|remote [--per-day 100000]');
-      const key = `ufc_${crypto.randomBytes(18).toString('base64url')}`;
-      const keyHash = crypto.createHash('sha256').update(key).digest('hex');
-      const perDay = Number(values['per-day'] ?? 100_000);
-      const label = arg.replace(/'/g, "''");
-      runWrangler(['d1', 'execute', D1_NAME, `--${target}`, '--yes', '--command',
-        `INSERT INTO api_keys (key_hash, label, per_day, created_at) VALUES ('${keyHash}', '${label}', ${perDay}, '${nowIso()}')`]);
-      console.log(`API key for "${arg}" (shown once): ${key}`);
-      return 0;
-    }
     default:
-      console.log('usage: cli.ts crawl --full | crawl --sample <n> | weekly [--since YYYY-MM-DD] | status | flag <url> | reparse | sync --target local|remote | key:create <label> --target ...');
+      console.log('usage: cli.ts crawl --full | crawl --sample <n> | weekly [--since YYYY-MM-DD] | status | flag <url> | reparse | sync --target local|remote');
       return command ? 1 : 0;
   }
 }

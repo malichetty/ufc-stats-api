@@ -1,7 +1,7 @@
 /**
  * Installs (or with --uninstall removes) the Studio's two launchd jobs, run from this checkout:
  *   me.aristotle.ufcstats.weekly    Sunday and Monday 14:00 local time (US Eastern on the Studio)
- *   me.aristotle.ufcstats.watchdog  every 10 minutes
+ *   me.aristotle.ufcstats.watchdog  every 2 minutes
  * Usage: node scraper/install-launchd.ts --target remote --plan paid
  */
 import { execFileSync } from 'node:child_process';
@@ -53,7 +53,7 @@ const weeklySchedule = `  <key>StartCalendarInterval</key>
     <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
   </array>`;
-const watchdogSchedule = `  <key>StartInterval</key><integer>600</integer>`;
+const watchdogSchedule = `  <key>StartInterval</key><integer>120</integer>`;
 
 const env = {
   PATH: `${path.dirname(process.execPath)}:/opt/homebrew/bin:/usr/bin:/bin`,
