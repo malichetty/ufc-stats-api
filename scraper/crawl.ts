@@ -23,16 +23,23 @@ const PRIORITY: Record<PageKind, number> = {
   events_list: 0, upcoming_list: 0, fighter_list: 1, event: 2, fight: 3, fighter: 4,
 };
 const MAX_ATTEMPTS = 3;
+/** About 5 minutes a run at the crawl's pace. */
+const PROFILE_REFRESH_PER_RUN = 100;
 const MAX_FAILURES_IN_A_ROW = 5;
 
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-export function enqueue(db: DatabaseSync, url: string, force = false): void {
+/**
+ * force: queue the page again even if it was fetched. 'refresh' does the same but leaves a 404'd ('gone') page alone,
+ * for the automatic re-queues; `true` (flag, enqueue) reopens it on purpose.
+ */
+export function enqueue(db: DatabaseSync, url: string, force: boolean | 'refresh' = false): void {
   const kind = kindOf(url);
   if (force) {
     db.prepare(
       `INSERT INTO pages (url, kind, status) VALUES (?, ?, 'pending')
-       ON CONFLICT(url) DO UPDATE SET status = 'pending', attempts = 0, last_error = NULL`,
+       ON CONFLICT(url) DO UPDATE SET status = 'pending', attempts = 0, last_error = NULL
+       ${force === 'refresh' ? "WHERE pages.status != 'gone'" : ''}`,
     ).run(url, kind);
   } else {
     db.prepare(`INSERT OR IGNORE INTO pages (url, kind, status) VALUES (?, ?, 'pending')`).run(url, kind);
@@ -113,7 +120,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
       // fight page before the result was posted.
       const stored = db.prepare('SELECT fighter1_result r, page_scraped_at at FROM fights WHERE id = ?').get(f.id) as
         { r: string | null; at: string | null } | undefined;
-      enqueue(db, fightUrl(f.id), f.flags.length === 0 || (!!stored?.at && stored.r === null));
+      enqueue(db, fightUrl(f.id), f.flags.length === 0 || (!!stored?.at && stored.r === null) ? 'refresh' : false);
     }
     return;
   }
@@ -282,6 +289,18 @@ export function seed(db: DatabaseSync, opts: CrawlOptions): void {
   for (const e of db.prepare('SELECT id FROM events WHERE complete = 0').all() as { id: string }[]) {
     enqueue(db, eventUrl(e.id), true);
   }
+  // Off-list cards (Contender Series, Road to UFC) are linked only from fighter profiles, and a later tournament
+  // round can be all known fighters. So each run also re-reads some known profiles (Aris approved 2026-11-12):
+  // fighters from an off-list card in the last two years first, then the longest unread.
+  const refresh = db.prepare(
+    `SELECT p.url FROM pages p WHERE p.kind = 'fighter' AND p.status = 'done'
+     ORDER BY substr(p.url, -16) IN (
+       SELECT f.fighter1_id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date >= date('now', '-2 years')
+       UNION SELECT f.fighter2_id FROM fights f JOIN events e ON e.id = f.event_id WHERE e.listed = 0 AND e.date >= date('now', '-2 years')
+     ) DESC, p.fetched_at ASC
+     LIMIT ?`,
+  ).all(PROFILE_REFRESH_PER_RUN) as { url: string }[];
+  for (const r of refresh) enqueue(db, r.url, 'refresh');
 }
 
 /** Events ufcstats still lists as upcoming although their date has passed: results not published yet. */

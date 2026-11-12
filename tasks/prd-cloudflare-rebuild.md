@@ -55,7 +55,8 @@ The old API at `ufcapi.aristotle.me` is dead: DNS still points at the retired se
 - [ ] If an upcoming event dated before today isn't listed as completed yet, the run exits with code 75 ("not published yet"). The retry run picks it up.
 - [ ] An event counts as done only when every fight on its card has a result. An incomplete event is fetched again on the next run.
 - [ ] Each event's `first_seen_at` is recorded, so publish timing can be read later.
-- [ ] *Verifiable:* running `pnpm weekly` twice in a row, the second run fetches 2 list pages plus 26 fighter list pages, and writes 0 rows to D1.
+- [ ] Each run also re-reads 100 known fighter profiles (Aris approved 2026-11-12, an exception to "nothing older is re-scraped"): fighters from an off-list card in the last two years first, then the longest unread. That is how a later Road to UFC round made only of known fighters is found.
+- [ ] *Verifiable:* running `pnpm weekly` twice in a row, the second run fetches 2 list pages, 26 fighter list pages and 100 profiles, and writes nothing to D1 unless a refreshed profile changed.
 
 ### US-004: Load to D1
 - [ ] The Studio marks changed rows (by content hash), writes them to one SQL file per load, and runs it with `wrangler d1 execute --file`. The target is set by `UFC_D1_TARGET`: `local`, `remote` or `none`.

@@ -285,6 +285,7 @@ export function build(db: DatabaseSync): Built {
   const ufcEvents = events.filter((e) => e.ufc);
   const ufcFights = fights.filter((f) => eventById.get(f.event_id)!.ufc);
   const ufcFightIds = new Set(ufcFights.map((f) => f.id));
+  const builtFightIds = new Set(fights.map((f) => f.id));
   const roundRows = stats.filter((s) => s.round > 0 && ufcFightIds.has(s.fight_id)).length;
   const overview = {
     total_fighters: fighters.length,
@@ -293,7 +294,7 @@ export function build(db: DatabaseSync): Built {
     total_round_stat_rows: roundRows,
     other_events: events.length - ufcEvents.length,
     other_fights: fights.length - ufcFights.length,
-    other_round_stat_rows: stats.filter((s) => s.round > 0).length - roundRows,
+    other_round_stat_rows: stats.filter((s) => s.round > 0 && builtFightIds.has(s.fight_id) && !ufcFightIds.has(s.fight_id)).length,
     champions: fighters.filter((f) => f.is_champion).length,
     latest_event: ufcEvents.length ? eventRef(ufcEvents[ufcEvents.length - 1]) : null,
     stances: { orthodox: stance('orthodox'), southpaw: stance('southpaw'), switch: stance('switch') },

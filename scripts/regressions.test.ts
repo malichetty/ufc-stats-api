@@ -199,7 +199,39 @@ test('a card whose fight page keeps failing is held back instead of going out mi
   const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
   db.prepare(`UPDATE fights SET page_scraped_at = NULL WHERE id = ?`).run(FIGHT);
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
-  assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the fight page fails');
+  db.prepare(`INSERT INTO fight_stats (fight_id, fighter_id, round) VALUES (?, ?, 1)`).run(FIGHT, F1);
+  const held = build(db);
+  assert.ok(!held.events.some((e) => e.id === ev), 'held back while the fight page fails');
+  const overview = JSON.parse(String(held.meta.find((m) => m.key === 'overview')!.value));
+  assert.equal(overview.other_round_stat_rows, 0, "a held-back card's round stats aren't counted anywhere");
   db.prepare(`UPDATE pages SET status = 'gone' WHERE url = ?`).run(fightUrl);
   assert.ok(build(db).events.some((e) => e.id === ev), 'published once ufcstats has removed the page');
+});
+
+test('re-reading an event page does not reopen a fight page ufcstats removed (404)', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
+  db.prepare(`UPDATE pages SET status = 'gone' WHERE url = ?`).run(fightUrl);
+  ingest(db, `http://ufcstats.com/event-details/${EVENT}`, eventPage(''), opts); // no result flag: a forced re-queue
+  assert.equal(status(db, fightUrl), 'gone');
+});
+
+test('a weekly run re-reads known profiles, fighters from recent off-list cards first', async () => {
+  const { seed } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  db.exec(`DELETE FROM pages WHERE kind = 'fighter'`);
+  const hidden = '6666666666666666';
+  db.prepare(`INSERT OR REPLACE INTO events (id, name, date, listed, first_seen_at) VALUES (?, 'Road to UFC 9.1', date('now', '-30 days'), 0, 'x')`).run(hidden);
+  db.prepare(`INSERT OR REPLACE INTO fights (id, event_id, fighter1_id, fighter2_id) VALUES ('7777777777777777', ?, ?, ?)`).run(hidden, F1, F2);
+  const ids = Array.from({ length: 120 }, (_, i) => i.toString(16).padStart(16, 'a'));
+  for (const id of [...ids, F1, F2]) {
+    db.prepare(`INSERT INTO pages (url, kind, status, fetched_at) VALUES (?, 'fighter', 'done', ?)`)
+      .run(`http://ufcstats.com/fighter-details/${id}`, id === F1 || id === F2 ? '2026-11-11' : '2020-01-01');
+  }
+  seed(db, { mode: 'weekly' });
+  const pending = (db.prepare(`SELECT COUNT(*) n FROM pages WHERE kind = 'fighter' AND status = 'pending'`).get() as { n: number }).n;
+  assert.equal(pending, 100);
+  assert.equal(status(db, `http://ufcstats.com/fighter-details/${F1}`), 'pending', 'recent off-list fighter first, though read recently');
+  assert.equal(status(db, `http://ufcstats.com/fighter-details/${F2}`), 'pending');
 });
