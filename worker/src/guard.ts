@@ -1,7 +1,7 @@
 /**
  * Who is calling, and whether they're still inside their limits.
- * Minute limits use the Workers rate-limit binding. The daily allowance is a counter kept in the edge cache:
- * cache reads and writes are free, so counting costs nothing, at the price of being per data centre and approximate.
+ * Counters are kept in the edge cache: cache reads and writes are free, so counting costs nothing, at the price of
+ * being per data centre and approximate. The Workers rate-limit binding sits in front as a burst catcher.
  */
 
 export type Tier = 'anon' | 'admin';
@@ -82,28 +82,40 @@ export async function enforce(env: Env, client: Client & { block: string }, orig
     'X-RateLimit-Limit-Day': String(client.perDay),
   };
 
+  // Cloudflare's limiter catches fast parallel bursts, but it counts per server: live, it let 150 one-at-a-time
+  // requests a minute through a limit of 30. The edge cache is shared across a data centre, so the minute and the day
+  // are counted there too (free; per data centre, and requests in flight at the same moment can count as one).
   if (!(await env.RL_ANON.limit({ key: client.id })).success) {
     return { blocked: tooMany(`Limit is ${client.perMinute} requests a minute. Wait a minute.`, 60, headers), headers };
   }
-  // After the per-IP check, so one noisy /64 can't fill its /48's bucket on its own.
-  if (client.block !== client.id && !(await env.RL_BLOCK.limit({ key: client.block })).success) {
-    return { blocked: tooMany('Too many requests from this network. Wait a minute.', 60, headers), headers };
+  const now = Date.now();
+  const minute = Math.floor(now / 60_000);
+  const toNextMinute = Math.max(1, 60 - Math.floor((now % 60_000) / 1000));
+  const day = new Date(now).toISOString().slice(0, 10);
+  const toMidnight = secondsToUtcMidnight();
+  const counters = [
+    { key: `__min/${minute}/${client.id}`, limit: client.perMinute!, ttl: toNextMinute,
+      detail: `Limit is ${client.perMinute} requests a minute. Wait a minute.` },
+    // After the per-IP minute, so one noisy /64 can't fill its /48's bucket on its own.
+    ...(client.block !== client.id
+      ? [{ key: `__min/${minute}/${client.block}`, limit: Number(env.BLOCK_PER_MINUTE), ttl: toNextMinute,
+          detail: 'Too many requests from this network. Wait a minute.' }]
+      : []),
+    { key: `__day/${day}/${client.id}`, limit: client.perDay!, ttl: toMidnight,
+      detail: `Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.` },
+  ];
+  const cache = caches.default;
+  const requestFor = (k: string) => new Request(`${origin}/${k.split('/').map(encodeURIComponent).join('/')}`);
+  const used = await Promise.all(counters.map(async (c) => {
+    const hit = await cache.match(requestFor(c.key));
+    return hit ? Number(await hit.text()) || 0 : 0;
+  }));
+  headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay! - used[used.length - 1] - 1));
+  for (let i = 0; i < counters.length; i++) {
+    if (used[i] >= counters[i].limit) return { blocked: tooMany(counters[i].detail, counters[i].ttl, headers), headers };
   }
-
-  if (client.perDay !== null) {
-    const day = new Date().toISOString().slice(0, 10);
-    const counterKey = new Request(`${origin}/__day/${day}/${encodeURIComponent(client.id)}`);
-    const cache = caches.default;
-    const hit = await cache.match(counterKey);
-    const used = hit ? Number(await hit.text()) || 0 : 0;
-    const reset = secondsToUtcMidnight();
-    headers['X-RateLimit-Remaining-Day'] = String(Math.max(0, client.perDay - used - 1));
-    if (used >= client.perDay) {
-      return { blocked: tooMany(`Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.`, reset, headers), headers };
-    }
-    // Awaited, not deferred, to keep the read-then-write window short. Requests in flight at the same moment can
-    // still both count as one; the per-minute limit above bounds how far that lets anyone go past the allowance.
-    await cache.put(counterKey, new Response(String(used + 1), { headers: { 'Cache-Control': `public, max-age=${reset}` } }));
-  }
+  // Awaited, not deferred, to keep the read-then-write window short.
+  await Promise.all(counters.map((c, i) =>
+    cache.put(requestFor(c.key), new Response(String(used[i] + 1), { headers: { 'Cache-Control': `public, max-age=${c.ttl}` } }))));
   return { blocked: null, headers };
 }

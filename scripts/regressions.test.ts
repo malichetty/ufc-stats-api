@@ -164,3 +164,27 @@ test('a card that leaves the upcoming list without reaching the completed list i
   ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', upcoming([]), opts);
   assert.equal(status(db, `http://ufcstats.com/event-details/${card}`), 'pending');
 });
+
+test('one-at-a-time requests past 30 a minute are refused even when the rate-limit binding lets them through', async () => {
+  const { enforce, identify } = await import('../worker/src/guard.ts');
+  const store = new Map<string, string>();
+  (globalThis as any).caches = {
+    default: {
+      match: async (r: Request) => (store.has(r.url) ? new Response(store.get(r.url)) : undefined),
+      put: async (r: Request, res: Response) => { store.set(r.url, await res.text()); },
+    },
+  };
+  // Live, Cloudflare's limiter let 150 sequential requests a minute through a limit of 30.
+  const env = {
+    RL_ANON: { limit: async () => ({ success: true }) }, RL_ADMIN: { limit: async () => ({ success: true }) },
+    ANON_PER_DAY: '1000', ANON_PER_MINUTE: '30', BLOCK_PER_MINUTE: '120',
+  } as any;
+  const req = new Request('https://x/api/fighters', { headers: { 'CF-Connecting-IP': '203.0.113.9' } });
+  const statuses: number[] = [];
+  for (let i = 0; i < 31; i++) {
+    const r = await enforce(env, identify(req, env), 'https://x');
+    statuses.push(r.blocked ? r.blocked.status : 200);
+  }
+  assert.deepEqual(statuses.slice(0, 30), Array(30).fill(200));
+  assert.equal(statuses[30], 429);
+});
