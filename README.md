@@ -58,7 +58,7 @@ ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► scraper SQLite 
 ```
 
 - `scraper/`: runs on a Mac. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
-  ufcstats only serves plain http, so the scraper treats every page as untrusted: Chromium runs with its sandbox on and can reach no host but ufcstats.com, pages with implausible content are refused before anything is stored, an event page can't move a fight that has its own page, and a load that would delete more than a few published rows stops (`pnpm sync --target remote --allow-deletes` overrides it after a check).
+  ufcstats only serves plain http, so the scraper treats every page as untrusted: Chromium runs with its sandbox on and can reach no host but ufcstats.com, pages with implausible content are refused before anything is stored, a row too large for one database statement is loaded slimmed rather than failing the load, an event page can't move a fight that has its own page (it gets that fight page checked again), and a load that would delete more than a few published rows stops (`pnpm sync --target remote --allow-deletes` overrides it after a check).
 - `worker/`: the Cloudflare Worker and D1 schema. The scraper prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
 - launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 2 minutes.
 
@@ -81,7 +81,7 @@ A change to the serving tables ships in this order: `wrangler d1 migrations appl
 
 Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts, and a note when a weekly run stops or fails, go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
 
-Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, 5 unanswered pages in a row (timeouts, 5xx), or 30 answered but unusable pages in a row (404s, pages that don't parse), and doesn't retry harder.
+Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 unanswered pages in a row (timeouts, 5xx), and doesn't retry harder. Pages ufcstats answers but that can't be used (404s, pages that don't parse) never stop it; 30 of those in a row are kept as failing rather than gone, and retried once a run.
 
 ## License
 

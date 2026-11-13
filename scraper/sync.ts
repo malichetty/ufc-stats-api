@@ -27,9 +27,34 @@ const sqlValue = (v: string | number | null): string =>
 const hash = (r: Row) => crypto.createHash('sha1').update(JSON.stringify(r)).digest('hex');
 
 const tupleOf = (cols: string[], r: Row) => `(${cols.map((c) => sqlValue(r[c])).join(', ')})`;
+
+/** Short, printable: real ufcstats text fields are at most ~150 characters. */
+const clip = (v: string) => v.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
+
+/**
+ * A row over D1's statement limit keeps its place (build() has already numbered the dense seq paging and the counts
+ * with it in) but loses its bulk: text is clipped and each JSON document keeps only its top-level values, with lists
+ * emptied so the API's response shapes still hold. Only a broken or hostile page gets here; real rows are under 70 KB.
+ */
+function slim(r: Row): Row {
+  const out: Row = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (typeof v !== 'string') { out[k] = v; continue; }
+    let doc: unknown;
+    try { doc = /^[{[]/.test(v) ? JSON.parse(v) : undefined; } catch { doc = undefined; }
+    if (Array.isArray(doc)) { out[k] = '[]'; continue; }
+    if (!doc || typeof doc !== 'object') { out[k] = clip(v); continue; }
+    const top: Record<string, unknown> = { too_large: true };
+    for (const [dk, dv] of Object.entries(doc)) {
+      top[dk] = Array.isArray(dv) ? [] : dv && typeof dv === 'object' ? null : typeof dv === 'string' ? clip(dv) : dv;
+    }
+    out[k] = JSON.stringify(top);
+  }
+  return out;
+}
 const headOf = (verb: string, table: string, cols: string[]) => `${verb} INTO ${table} (${cols.join(', ')}) VALUES\n`;
 
-function inserts(table: string, rows: Row[], verb = 'INSERT OR REPLACE'): string[] {
+function inserts(table: string, rows: Row[], log: (m: string) => void, verb = 'INSERT OR REPLACE'): string[] {
   if (rows.length === 0) return [];
   const cols = Object.keys(rows[0]);
   const head = headOf(verb, table, cols);
@@ -37,12 +62,15 @@ function inserts(table: string, rows: Row[], verb = 'INSERT OR REPLACE'): string
   const out: string[] = [];
   let batch: string[] = [];
   let size = headBytes;
+  const fits = (t: string) => headBytes + Buffer.byteLength(t) + 1 <= MAX_STATEMENT_BYTES; // bytes, D1's unit
   for (const r of rows) {
-    const tuple = tupleOf(cols, r);
+    let tuple = tupleOf(cols, r);
+    if (!fits(tuple)) {
+      log(`${table} row ${r.id ?? r.key} is too large for one D1 statement; loading it slimmed`);
+      tuple = tupleOf(cols, slim(r));
+      if (!fits(tuple)) throw new Error(`${table} row ${r.id ?? r.key} is too large for one D1 statement`);
+    }
     const bytes = Buffer.byteLength(tuple);
-    // Measured in bytes, D1's unit. A row can't be skipped instead: build() has already numbered the dense seq paging
-    // and the counts with it in. Ingest caps every text field, so this only fires on a real bug.
-    if (headBytes + bytes + 1 > MAX_STATEMENT_BYTES) throw new Error(`${table} row ${r.id ?? r.key} is too large for one D1 statement`);
     if (batch.length && size + bytes + 2 > MAX_STATEMENT_BYTES) {
       out.push(head + batch.join(',\n') + ';');
       batch = [];
@@ -121,9 +149,9 @@ export function sync(
       const touched = [...todo.map((r) => String(r.id)), ...gone];
       for (const list of inList(touched)) statements.push(`DELETE FROM ${tokenTable} WHERE ${ref} IN (${list});`);
       const ids = new Set(todo.map((r) => r.id));
-      statements.push(...inserts(tokenTable, built[tokenTable].filter((t) => ids.has(t[ref])), 'INSERT OR IGNORE'));
+      statements.push(...inserts(tokenTable, built[tokenTable].filter((t) => ids.has(t[ref])), log, 'INSERT OR IGNORE'));
     }
-    statements.push(...inserts(tbl, todo));
+    statements.push(...inserts(tbl, todo, log));
   }
 
   const total = Object.values(changed).reduce((a, b) => a + b, 0) + Object.values(deleted).reduce((a, b) => a + b, 0);
@@ -136,7 +164,7 @@ export function sync(
   statements.push(...inserts('meta', [
     { key: 'data_version', value: version },
     { key: 'last_updated', value: new Date().toISOString() },
-  ]));
+  ], log));
 
   const dir = path.join(DATA_DIR, 'loads');
   fs.mkdirSync(dir, { recursive: true });

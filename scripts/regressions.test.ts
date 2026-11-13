@@ -314,6 +314,20 @@ test('one event page cannot move a published fight to another event, so sync kee
   assert.equal(sync(db, 'remote', { dryRun: true, log: () => {} }).deleted.fights, 0);
 });
 
+test('a real card merge moves a completed fight once its own fight page confirms the new event', () => {
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const from = '6e6e6e6e6e6e6e6e', to = '6f6f6f6f6f6f6f6f', fight = '5f5f5f5f5f5f5f5f';
+  const card = (ev: string) => eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), fight).replace('November 07, 2026', 'November 07, 2020');
+  ingest(db, `http://ufcstats.com/event-details/${from}`, card(from), opts);
+  ingest(db, `http://ufcstats.com/fight-details/${fight}`, fightPage('W', 'L').replace(new RegExp(EVENT, 'g'), from), opts);
+  db.exec(`UPDATE pages SET status = 'done'`);
+  ingest(db, `http://ufcstats.com/event-details/${to}`, card(to), opts);
+  assert.equal(status(db, `http://ufcstats.com/fight-details/${fight}`), 'pending', 'the fight page is checked again');
+  ingest(db, `http://ufcstats.com/fight-details/${fight}`, fightPage('W', 'L').replace(new RegExp(EVENT, 'g'), to), opts);
+  assert.equal((db.prepare('SELECT event_id FROM fights WHERE id = ?').get(fight) as { event_id: string }).event_id, to);
+});
+
 test('an upcoming-list page cannot withdraw a published event, and neither can a future date on its page', async () => {
   const { build } = await import('../scraper/build.ts');
   const db = openDb();
@@ -336,7 +350,7 @@ test('a load that would delete many published rows is refused unless allowed', a
   assert.equal(sync(db, 'mass' as 'remote', { dryRun: true, allowDeletes: true, log: () => {} }).deleted.fights, 20);
 });
 
-test('an oversized text field is refused at ingest, and statement size is measured in bytes', async () => {
+test('an oversized text field is refused at ingest, and a row over the statement limit (in bytes) loads slimmed in place', async () => {
   const { sync } = await import('../scraper/sync.ts');
   const db = openDb();
   const opts = { mode: 'weekly' as const };
@@ -344,7 +358,9 @@ test('an oversized text field is refused at ingest, and statement size is measur
   assert.throws(() => ingest(db, 'http://ufcstats.com/fighter-details/8b8b8b8b8b8b8b8b', page('A'.repeat(46_000)), opts), /nickname is 46000 characters/);
   // The name lands in four columns of the row: 40,000 UTF-16 units (under the limit by length) but 120,000 bytes.
   db.prepare(`INSERT OR REPLACE INTO fighters (id, name, profile_scraped_at) VALUES ('8c8c8c8c8c8c8c8c', ?, 'x')`).run('漢'.repeat(10_000));
-  assert.throws(() => sync(db, 'remote', { dryRun: true, allowDeletes: true, log: () => {} }), /too large for one D1 statement/);
+  const { file } = sync(db, 'remote', { dryRun: true, allowDeletes: true, log: () => {} });
+  const row = fs.readFileSync(file!, 'utf8').split('\n').find((l) => l.startsWith(`('8c8c8c8c8c8c8c8c'`))!;
+  assert.ok(row.includes('"too_large":true') && row.includes('"fights":[]'), 'kept, slimmed, response shape intact');
   db.prepare(`DELETE FROM fighters WHERE id = '8c8c8c8c8c8c8c8c'`).run();
 });
 
@@ -410,14 +426,18 @@ test('a weekly run that hits the discovery cap flags the profile so the rest is 
   assert.ok(db.prepare('SELECT 1 FROM flags WHERE url = ?').get(url), 'profile flagged for the next run');
 });
 
-test('ufcstats answering 404 for everything stops the run without marking the queue gone', async () => {
-  const { drain, BlockedError } = await import('../scraper/crawl.ts');
+test('ufcstats answering 404 for everything marks nothing gone, run after run', async () => {
+  const { drain, seed } = await import('../scraper/crawl.ts');
   const db = openDb();
   db.exec('DELETE FROM pages');
-  for (let i = 0; i < 60; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, 'd')}`);
+  for (let i = 0; i < 30; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, 'd')}`);
   const fetcher = { open: async () => {}, close: async () => {}, get: async () => { throw new Error('HTTP 404'); } };
-  await assert.rejects(drain(db, { mode: 'weekly', log: () => {} }, fetcher), BlockedError);
-  assert.equal((db.prepare(`SELECT COUNT(*) n FROM pages WHERE status = 'gone'`).get() as { n: number }).n, 0);
+  for (let run = 0; run < 2; run++) { // the next run, still all 404, keeps them the same way
+    seed(db, { mode: 'weekly' });
+    await drain(db, { mode: 'weekly', log: () => {} }, fetcher);
+    assert.equal((db.prepare(`SELECT COUNT(*) n FROM pages WHERE status = 'gone'`).get() as { n: number }).n, 0);
+    assert.equal(status(db, 'http://ufcstats.com/fight-details/ddddddddddddddd0'), 'failed');
+  }
 });
 
 test('five first-try timeouts or 5xx answers in a row still stop the run', async () => {

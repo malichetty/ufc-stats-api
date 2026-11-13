@@ -34,7 +34,7 @@ const MAX_EVENT_LINKS_PER_PROFILE = 100;
 const MAX_DISCOVERED_EVENTS_PER_RUN = 25;
 /** Stored text fields are at most ~150 characters on ufcstats; a field far over that is a broken or hostile page. */
 const MAX_TEXT = 2_000;
-/** Answered but unusable (404, refused page): over a weekly run's discovery cap in a row means ufcstats changed. */
+/** Answered but unusable (404, refused page): more in a row than a weekly run's discovery cap means ufcstats changed. */
 const MAX_UNUSABLE_IN_A_ROW = MAX_DISCOVERED_EVENTS_PER_RUN + MAX_FAILURES_IN_A_ROW;
 
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -168,11 +168,12 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
            time = COALESCE(fights.time, excluded.time)`,
       ).run(f.id, e.id, f.bout_order, f.fighter1_id, f.fighter2_id, f.fighter1_name, f.fighter2_name,
         f.weight_class, JSON.stringify(f.bonuses), f.method, f.method_detail, f.round, f.time);
-      // Fetch the fight page again while it has no result: either the event page shows none yet, or we stored the
-      // fight page before the result was posted.
-      const stored = db.prepare('SELECT fighter1_result r, page_scraped_at at FROM fights WHERE id = ?').get(f.id) as
-        { r: string | null; at: string | null } | undefined;
-      enqueue(db, fightUrl(f.id), f.flags.length === 0 || (!!stored?.at && stored.r === null) ? 'refresh' : false);
+      // Fetch the fight page again while it has no result (the event page shows none yet, or we stored the fight page
+      // before the result was posted), or when this card claims a fight stored under another event (a merged card).
+      const stored = db.prepare('SELECT fighter1_result r, page_scraped_at at, event_id ev FROM fights WHERE id = ?').get(f.id) as
+        { r: string | null; at: string | null; ev: string } | undefined;
+      const recheck = f.flags.length === 0 || (!!stored?.at && (stored.r === null || stored.ev !== e.id));
+      enqueue(db, fightUrl(f.id), recheck ? 'refresh' : false);
     }
     return;
   }
@@ -245,8 +246,9 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     if (opts.mode !== 'sample') {
       // Upcoming cards are linked too; they're fetched once they're on the completed list.
       const known = db.prepare('SELECT 1 FROM events WHERE id = ?1 UNION ALL SELECT 1 FROM upcoming_events WHERE id = ?1');
+      const queued = db.prepare('SELECT 1 FROM pages WHERE url = ?');
       for (const ev of p.event_ids) {
-        if (known.get(ev)) continue;
+        if (known.get(ev) || queued.get(eventUrl(ev))) continue;
         if (opts.mode === 'weekly' && (opts.discovered ?? 0) >= MAX_DISCOVERED_EVENTS_PER_RUN) {
           // Over this run's cap: flag the profile so the next weekly run reads it again and queues the rest.
           db.prepare('INSERT OR REPLACE INTO flags (url, flagged_at) VALUES (?, ?)').run(url, now);
@@ -284,27 +286,29 @@ export async function drain(
     log(`${sig} received; finishing the current page and stopping`);
     stopping = true;
   };
-  // Only a page's first-ever try counts toward a stop; retries of pages that failed before are that page's problem.
-  // No answer (timeout, 5xx, challenge) stops after 5 in a row: the sign ufcstats stopped answering. An answer we can't
-  // use (4xx, a page ingest refuses) is usually about that page, and a poisoned profile can queue 25 of them, so those
-  // stop only after 30 in a row; the 404s in that streak go back to pending rather than staying 'gone'.
-  // A 404 is otherwise final ('gone'); `pnpm flag` reopens it.
+  // No answer (timeout, 5xx, challenge) on 5 first tries in a row stops the run: the sign ufcstats stopped answering.
+  // Retries of pages that failed before are that page's problem. An answer we can't use (4xx, a page ingest refuses)
+  // never stops the run, so links a bad page plants can't hold back the load. A 404 is final ('gone'; `pnpm flag`
+  // reopens it), except in a streak of 30 unusable answers in a row: that is ufcstats changing or failing, not those
+  // pages, so the whole streak is kept as 'failed' (one quiet retry each run) and nothing is retried this run.
   const fail = (next: { url: string; attempts: number }, e: unknown, answered: boolean) => {
     const msg = (e as Error).message;
-    const gone = /HTTP 404/.test(msg);
     const attempts = next.attempts + 1;
+    const status = /HTTP 404/.test(msg) ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
     db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
-      .run(attempts, String(msg).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
+      .run(attempts, String(msg).slice(0, 500), status, next.url);
     log(`error on ${next.url}: ${msg}`);
-    if (next.attempts > 0) return;
-    if (!answered && ++failuresInARow >= MAX_FAILURES_IN_A_ROW) {
-      throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${msg})`);
+    if (answered) {
+      unusable.push(next.url);
+      if (unusable.length >= MAX_UNUSABLE_IN_A_ROW) {
+        if (unusable.length === MAX_UNUSABLE_IN_A_ROW) log(`${MAX_UNUSABLE_IN_A_ROW} unusable answers in a row; ufcstats may have changed`);
+        db.prepare(`UPDATE pages SET status = 'failed', attempts = ? WHERE url IN (SELECT value FROM json_each(?))`)
+          .run(MAX_ATTEMPTS, JSON.stringify(unusable));
+      }
+      return;
     }
-    if (answered) unusable.push(next.url);
-    if (unusable.length >= MAX_UNUSABLE_IN_A_ROW) {
-      db.prepare(`UPDATE pages SET status = 'pending' WHERE status = 'gone' AND url IN (SELECT value FROM json_each(?))`)
-        .run(JSON.stringify(unusable));
-      throw new BlockedError(`${MAX_UNUSABLE_IN_A_ROW} unusable answers in a row (404 or refused); stopping (last: ${msg})`);
+    if (next.attempts === 0 && ++failuresInARow >= MAX_FAILURES_IN_A_ROW) {
+      throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${msg})`);
     }
   };
   const onTerm = () => stop('SIGTERM');
