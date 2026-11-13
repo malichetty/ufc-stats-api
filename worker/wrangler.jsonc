@@ -27,7 +27,8 @@
     "ANON_PER_DAY": "1000",
     "ANON_PER_MINUTE": "30",
     // An IPv6 /48 (one tunnel or VPS allocation), so rotating /64s doesn't multiply the per-IP limit.
-    "BLOCK_PER_MINUTE": "120"
+    "BLOCK_PER_MINUTE": "120",
+    "BLOCK_PER_DAY": "4000"
   },
   "observability": { "enabled": true, "head_sampling_rate": 0.01 }
 }

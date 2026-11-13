@@ -142,7 +142,7 @@ test('an event ufcstats links only from fighter pages is fetched, and kept apart
   ingest(db, 'http://ufcstats.com/statistics/events/completed?page=all', list, opts);
   db.prepare(`INSERT OR REPLACE INTO upcoming_events (id, name, seen_at) VALUES (?, 'UFC 999', 'now')`).run(upcomingId);
   const profile = (ids: string[]) => `<html><body><span class="b-content__title-highlight">A One</span>
-    ${ids.map((i) => `<a href="http://ufcstats.com/event-details/${i}">x</a>`).join('')}</body></html>`;
+    <table><tbody>${ids.map((i) => `<tr class="b-fight-details__table-row"><td><a href="http://ufcstats.com/event-details/${i}">x</a></td></tr>`).join('')}</tbody></table></body></html>`;
   ingest(db, `http://ufcstats.com/fighter-details/${F1}`, profile([listedId, hiddenId, upcomingId]), opts);
   assert.equal(status(db, `http://ufcstats.com/event-details/${hiddenId}`), 'pending', 'the unlisted event is queued');
   assert.equal(db.prepare('SELECT 1 FROM pages WHERE url = ?').get(`http://ufcstats.com/event-details/${upcomingId}`), undefined,
@@ -194,12 +194,13 @@ test('a card whose fight page keeps failing is held back instead of going out mi
   const db = openDb();
   const opts = { mode: 'weekly' as const };
   const ev = '5555555555555555';
-  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace('November 07, 2026', 'November 07, 2020');
+  const fight = '5a5a5a5a5a5a5a5a';
+  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), fight).replace('November 07, 2026', 'November 07, 2020');
   ingest(db, `http://ufcstats.com/event-details/${ev}`, page, opts);
-  const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
-  db.prepare(`UPDATE fights SET page_scraped_at = NULL WHERE id = ?`).run(FIGHT);
+  const fightUrl = `http://ufcstats.com/fight-details/${fight}`;
+  db.prepare(`UPDATE fights SET page_scraped_at = NULL WHERE id = ?`).run(fight);
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
-  db.prepare(`INSERT INTO fight_stats (fight_id, fighter_id, round) VALUES (?, ?, 1)`).run(FIGHT, F1);
+  db.prepare(`INSERT INTO fight_stats (fight_id, fighter_id, round) VALUES (?, ?, 1)`).run(fight, F1);
   const held = build(db);
   assert.ok(!held.events.some((e) => e.id === ev), 'held back while the fight page fails');
   const overview = JSON.parse(String(held.meta.find((m) => m.key === 'overview')!.value));
@@ -242,11 +243,12 @@ test('a card whose result-less fight is being fetched again is held back until t
   const db = openDb();
   const opts = { mode: 'weekly' as const };
   const ev = '8888888888888888';
-  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace('November 07, 2026', 'November 07, 2020');
+  const fight = '8a8a8a8a8a8a8a8a';
+  const page = eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), fight).replace('November 07, 2026', 'November 07, 2020');
   ingest(db, `http://ufcstats.com/event-details/${ev}`, page, opts);
-  const fightUrl = `http://ufcstats.com/fight-details/${FIGHT}`;
+  const fightUrl = `http://ufcstats.com/fight-details/${fight}`;
   // Stored before its result was posted, and the refetch keeps failing.
-  db.prepare(`UPDATE fights SET page_scraped_at = '2020-11-07', fighter1_result = NULL, fighter2_result = NULL WHERE id = ?`).run(FIGHT);
+  db.prepare(`UPDATE fights SET page_scraped_at = '2020-11-07', fighter1_result = NULL, fighter2_result = NULL WHERE id = ?`).run(fight);
   db.prepare(`UPDATE pages SET status = 'failed', attempts = 3 WHERE url = ?`).run(fightUrl);
   assert.ok(!build(db).events.some((e) => e.id === ev), 'held back while the result-less fight is retried');
   assert.ok(build(db, new Set([ev])).events.some((e) => e.id === ev), 'a card already live stays live while it retries');
@@ -255,7 +257,7 @@ test('a card whose result-less fight is being fetched again is held back until t
   db.prepare(`INSERT OR REPLACE INTO served (target, tbl, id, hash) VALUES ('remote', 'events', ?, 'old')`).run(ev);
   const res = sync(db, 'remote', { dryRun: true, log: () => {} });
   assert.equal(res.deleted.events, 0, 'sync keeps the live card');
-  db.prepare(`UPDATE fights SET fighter1_result = 'W', fighter2_result = 'L' WHERE id = ?`).run(FIGHT);
+  db.prepare(`UPDATE fights SET fighter1_result = 'W', fighter2_result = 'L' WHERE id = ?`).run(fight);
   db.prepare(`UPDATE pages SET status = 'done' WHERE url = ?`).run(fightUrl);
   assert.ok(build(db).events.some((e) => e.id === ev), 'published once the result is in');
 });
@@ -281,4 +283,117 @@ test('fighter, fight and event pages that parse blank (a layout change) change n
   assert.throws(() => ingest(db, `http://ufcstats.com/event-details/${EVENT}`, blank, opts));
   const titleOnly = eventPage('win').replace(/<table>[\s\S]*<\/table>/, '<div>new card layout</div>');
   assert.throws(() => ingest(db, `http://ufcstats.com/event-details/${EVENT}`, titleOnly, opts), /no fights/);
+});
+
+test('the watchdog keeps the API paused when the domain is re-attached the same day (e.g. by wrangler deploy)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const run = (steps: unknown[]) => execFileSync(process.execPath, ['--no-warnings', 'scripts/fixtures/watchdog/run.mjs', JSON.stringify(steps)], { encoding: 'utf8' })
+    .trim().split('\n').map((l) => JSON.parse(l) as { requests: number; attached: boolean; kill: boolean });
+  const ticks = run([150_000, 'deploy', 160_000]);
+  assert.equal(ticks[0].attached, false, 'paused over the cap');
+  assert.equal(ticks[1].attached, false, 're-attached domain detached again on the next over-cap tick');
+  assert.equal(ticks[1].kill, true, 'the D1 kill flag backs the pause');
+});
+
+test('one event page cannot move a published fight to another event, so sync keeps it', async () => {
+  const { sync } = await import('../scraper/sync.ts');
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const real = '6b6b6b6b6b6b6b6b', fake = '6c6c6c6c6c6c6c6c', fight = '6d6d6d6d6d6d6d6d';
+  const card = (ev: string, date: string) => eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), fight).replace('November 07, 2026', date);
+  ingest(db, `http://ufcstats.com/event-details/${real}`, card(real, 'November 07, 2020'), opts);
+  ingest(db, `http://ufcstats.com/fight-details/${fight}`, fightPage('W', 'L').replace(new RegExp(EVENT, 'g'), real), opts);
+  db.exec(`UPDATE pages SET status = 'done'`);
+  sync(db, 'remote', { dryRun: true, log: () => {} });
+  const { build } = await import('../scraper/build.ts');
+  for (const t of ['events', 'fights'] as const) for (const r of build(db)[t]) {
+    db.prepare(`INSERT OR REPLACE INTO served (target, tbl, id, hash) VALUES ('remote', ?, ?, 'x')`).run(t, r.id);
+  }
+  ingest(db, `http://ufcstats.com/event-details/${fake}`, card(fake, 'December 01, 2099'), opts);
+  assert.equal((db.prepare('SELECT event_id FROM fights WHERE id = ?').get(fight) as { event_id: string }).event_id, real);
+  assert.equal(sync(db, 'remote', { dryRun: true, log: () => {} }).deleted.fights, 0);
+});
+
+test('an upcoming-list page cannot withdraw a published event, and neither can a future date on its page', async () => {
+  const { build } = await import('../scraper/build.ts');
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const ev = '7b7b7b7b7b7b7b7b';
+  const list = (ids: string[]) => `<table>${ids.map((i) => `<tr class="b-statistics__table-row"><td>
+    <a href="http://ufcstats.com/event-details/${i}">UFC 7</a><span class="b-statistics__date">December 05, 2099</span></td><td>Vegas</td></tr>`).join('')}</table>`;
+  db.prepare(`INSERT OR REPLACE INTO events (id, name, date, listed, first_seen_at) VALUES (?, 'UFC 7', '2020-11-07', 1, 'x')`).run(ev);
+  assert.throws(() => ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', list([ev]), opts), /already on the completed list/);
+  ingest(db, `http://ufcstats.com/event-details/${ev}`, eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), '7c7c7c7c7c7c7c7c').replace('November 07, 2026', 'December 01, 2099'), opts);
+  assert.ok(build(db, new Set([ev])).events.some((e) => e.id === ev), 'a live event dated in the future stays published');
+});
+
+test('a load that would delete many published rows is refused unless allowed', async () => {
+  const { sync } = await import('../scraper/sync.ts');
+  const db = openDb();
+  for (let i = 0; i < 20; i++) db.prepare(`INSERT OR REPLACE INTO served (target, tbl, id, hash) VALUES ('mass', 'fights', ?, 'x')`).run(i.toString(16).padStart(16, 'e'));
+  assert.throws(() => sync(db, 'mass' as 'remote', { dryRun: true, log: () => {} }), /would delete 20 of 20 published fights/);
+  assert.equal(sync(db, 'mass' as 'remote', { dryRun: true, allowDeletes: true, log: () => {} }).deleted.fights, 20);
+});
+
+test('an oversized text field is refused at ingest, and an oversized row is skipped instead of blocking the load', async () => {
+  const { sync } = await import('../scraper/sync.ts');
+  const db = openDb();
+  const opts = { mode: 'weekly' as const };
+  const page = (nick: string) => `<html><body><span class="b-content__title-highlight">Long Nick</span><p class="b-content__Nickname">${nick}</p></body></html>`;
+  assert.throws(() => ingest(db, 'http://ufcstats.com/fighter-details/8b8b8b8b8b8b8b8b', page('A'.repeat(46_000)), opts), /nickname is 46000 characters/);
+  // A row that still can't fit (multi-byte text counts in bytes) is left out and retried; the rest goes out.
+  db.prepare(`INSERT OR REPLACE INTO fighters (id, name, nickname, profile_scraped_at) VALUES ('8c8c8c8c8c8c8c8c', 'Wide', ?, 'x')`).run('漢'.repeat(20_000));
+  db.prepare(`INSERT OR REPLACE INTO fighters (id, name, profile_scraped_at) VALUES ('8d8d8d8d8d8d8d8d', 'Normal', 'x')`).run();
+  const logs: string[] = [];
+  const res = sync(db, 'remote', { dryRun: true, allowDeletes: true, log: (m) => logs.push(m) });
+  assert.ok(res.file && fs.readFileSync(res.file, 'utf8').includes("'8d8d8d8d8d8d8d8d'"), 'the normal fighter is loaded');
+  assert.ok(logs.some((l) => l.includes('fighters:8c8c8c8c8c8c8c8c')), 'the oversized row is reported');
+});
+
+test('a fighter page linking many unknown events cannot stop the weekly crawl', async () => {
+  const { drain } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  db.exec('DELETE FROM pages');
+  const ids = Array.from({ length: 12 }, (_, i) => (i + 1).toString(16).padStart(16, '0'));
+  const profile = `<html><body><div class="b-foot"></div><span class="b-content__title-highlight">Link Farm</span><table><tbody>
+    ${ids.map((i) => `<tr class="b-fight-details__table-row"><td><a href="http://ufcstats.com/event-details/${i}">x</a></td></tr>`).join('')}</tbody></table></body></html>`;
+  enqueue(db, 'http://ufcstats.com/fighter-details/9b9b9b9b9b9b9b9b');
+  const fetcher = {
+    open: async () => {}, close: async () => {},
+    get: async (url: string) => {
+      if (url.includes('/fighter-details/')) return profile;
+      if (url.endsWith('1')) throw new Error('HTTP 404');
+      return '<html><body><div class="b-foot"></div></body></html>'; // answered, but not an event page
+    },
+  };
+  await drain(db, { mode: 'weekly', log: () => {} }, fetcher); // must not throw BlockedError
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM pages WHERE status = 'pending'`).get() as { n: number }).n, 0);
+});
+
+test('rotating /64s inside one IPv6 /48 cannot multiply the daily allowance', async () => {
+  const { enforce, identify } = await import('../worker/src/guard.ts');
+  const store = new Map<string, string>();
+  (globalThis as any).caches = {
+    default: {
+      match: async (r: Request) => (store.has(r.url) ? new Response(store.get(r.url)) : undefined),
+      put: async (r: Request, res: Response) => { store.set(r.url, await res.text()); },
+    },
+  };
+  const env = {
+    RL_ANON: { limit: async () => ({ success: true }) }, RL_BLOCK: { limit: async () => ({ success: true }) },
+    ANON_PER_DAY: '1000', ANON_PER_MINUTE: '30', BLOCK_PER_MINUTE: '120', BLOCK_PER_DAY: '4000',
+  } as any;
+  const realNow = Date.now;
+  let clock = Date.parse('2026-11-12T00:00:30Z');
+  Date.now = () => clock;
+  let served = 0;
+  try {
+    for (let minute = 0; minute < 60; minute++, clock += 60_000) {
+      for (let i = 0; i < 120; i++) {
+        const req = new Request('https://x/api/fighters', { headers: { 'CF-Connecting-IP': `2001:db8:abcd:${minute * 120 + i}::1` } });
+        if (!(await enforce(env, identify(req, env), 'https://x')).blocked) served++;
+      }
+    }
+  } finally { Date.now = realNow; }
+  assert.equal(served, 4000);
 });

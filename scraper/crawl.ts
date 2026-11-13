@@ -17,6 +17,8 @@ export interface CrawlOptions {
   since?: string;
   maxPages?: number;
   log?: (msg: string) => void;
+  /** weekly mode: event pages queued from fighter-profile links so far this run */
+  discovered?: number;
 }
 
 const PRIORITY: Record<PageKind, number> = {
@@ -26,6 +28,12 @@ const MAX_ATTEMPTS = 3;
 /** About 5 minutes a run at the crawl's pace. */
 const PROFILE_REFRESH_PER_RUN = 100;
 const MAX_FAILURES_IN_A_ROW = 5;
+/** Real profiles link at most 50 events; far more means the page isn't what it claims. */
+const MAX_EVENT_LINKS_PER_PROFILE = 100;
+/** A weekly run finds a handful of new off-list cards at most; more waits for the next run. */
+const MAX_DISCOVERED_EVENTS_PER_RUN = 25;
+/** Stored text fields are at most ~150 characters on ufcstats; a field far over that is a broken or hostile page. */
+const MAX_TEXT = 2_000;
 
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
@@ -33,17 +41,16 @@ const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/
  * force: queue the page again even if it was fetched. 'refresh' does the same but leaves a 404'd ('gone') page alone,
  * for the automatic re-queues; `true` (flag, enqueue) reopens it on purpose.
  */
-export function enqueue(db: DatabaseSync, url: string, force: boolean | 'refresh' = false): void {
+export function enqueue(db: DatabaseSync, url: string, force: boolean | 'refresh' = false): boolean {
   const kind = kindOf(url);
   if (force) {
-    db.prepare(
+    return db.prepare(
       `INSERT INTO pages (url, kind, status) VALUES (?, ?, 'pending')
        ON CONFLICT(url) DO UPDATE SET status = 'pending', attempts = 0, last_error = NULL
        ${force === 'refresh' ? "WHERE pages.status != 'gone'" : ''}`,
-    ).run(url, kind);
-  } else {
-    db.prepare(`INSERT OR IGNORE INTO pages (url, kind, status) VALUES (?, ?, 'pending')`).run(url, kind);
+    ).run(url, kind).changes > 0;
   }
+  return db.prepare(`INSERT OR IGNORE INTO pages (url, kind, status) VALUES (?, ?, 'pending')`).run(url, kind).changes > 0;
 }
 
 /**
@@ -54,6 +61,16 @@ function unrecognised(what: string, detail: string): never {
   throw new Error(`${what} not recognised (${detail}); layout change? Nothing updated`);
 }
 
+/** Every string in a parsed page, however nested, must be a plausible length before anything is written. */
+function capped(what: string, parsed: unknown): void {
+  const walk = (v: unknown, at: string): void => {
+    if (typeof v === 'string') { if (v.length > MAX_TEXT) unrecognised(what, `${at} is ${v.length} characters`); }
+    else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`));
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, at ? `${at}.${k}` : k);
+  };
+  walk(parsed, '');
+}
+
 /** Parse a fetched page into the tables and queue the pages it links to. */
 export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlOptions): void {
   const kind = kindOf(url);
@@ -62,6 +79,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'events_list') {
     const parsed = parseEventsList(html);
+    capped('completed-events list', parsed);
     // A layout change on ufcstats would parse as an empty or short list, and a whole-list read would then mark every
     // stored event as off the list. Refuse it: the page counts as failed and nothing changes.
     const had = (db.prepare('SELECT COUNT(*) n FROM events WHERE listed = 1').get() as { n: number }).n;
@@ -87,6 +105,11 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'upcoming_list') {
     const upcoming = parseEventsList(html);
+    capped('upcoming-events list', upcoming);
+    // A card on the completed list can't be upcoming; naming one would withhold it from the next build.
+    const done = db.prepare('SELECT 1 FROM events WHERE id = ? AND listed = 1');
+    const clash = upcoming.filter((e) => done.get(e.id)).length;
+    if (clash) unrecognised('upcoming-events list', `${clash} event(s) already on the completed list`);
     const hadUpcoming = (db.prepare('SELECT COUNT(*) n FROM upcoming_events').get() as { n: number }).n;
     if (upcoming.length === 0 && hadUpcoming > 0) unrecognised('upcoming-events list', `0 events, ${hadUpcoming} stored`);
     // Fighter-profile discovery skips upcoming cards, so a card that leaves this list without reaching the completed
@@ -105,6 +128,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
 
   if (kind === 'fighter_list') {
     const listedFighters = parseFighterList(html);
+    capped('fighter list page', listedFighters);
     if (listedFighters.length === 0) unrecognised('fighter list page', '0 fighters');
     for (const f of listedFighters) {
       db.prepare(`INSERT OR REPLACE INTO listed_fighters (id, first_name, last_name, nickname, is_champion) VALUES (?, ?, ?, ?, ?)`)
@@ -119,6 +143,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   if (kind === 'event') {
     const e = parseEvent(id, html);
     if (!e.name) unrecognised('event page', 'no event name');
+    capped('event page', e);
     // An upcoming card can be empty for a while; a card that already happened never is.
     if (e.fights.length === 0 && e.date && e.date <= today()) unrecognised('event page', 'past event with no fights');
     const complete = e.fights.length > 0 && e.fights.every((f) => f.flags.length > 0);
@@ -132,7 +157,10 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
         `INSERT INTO fights (id, event_id, bout_order, fighter1_id, fighter2_id, fighter1_name, fighter2_name,
            weight_class, bonuses, method_short, method_detail, round, time)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET event_id = excluded.event_id, bout_order = excluded.bout_order,
+         ON CONFLICT(id) DO UPDATE SET
+           -- A card lists fights, but only the fight's own page (which links its event) may move a stored fight.
+           event_id = CASE WHEN fights.page_scraped_at IS NULL THEN excluded.event_id ELSE fights.event_id END,
+           bout_order = excluded.bout_order,
            weight_class = excluded.weight_class, bonuses = excluded.bonuses, method_short = excluded.method_short,
            method_detail = excluded.method_detail, round = COALESCE(fights.round, excluded.round),
            time = COALESCE(fights.time, excluded.time)`,
@@ -150,6 +178,7 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   if (kind === 'fight') {
     const f = parseFight(id, html);
     if (f.fighters.length < 2) unrecognised('fight page', `${f.fighters.length} fighters`);
+    capped('fight page', f);
     const before = db.prepare('SELECT page_scraped_at, fighter1_result FROM fights WHERE id = ?').get(id) as
       | { page_scraped_at: string | null; fighter1_result: string | null } | undefined;
     const [a, b] = f.fighters;
@@ -158,7 +187,8 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
          fighter2_nickname, fighter1_result, fighter2_result, bout, title_bout, method, details, round, time,
          time_format, referee, page_scraped_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET fighter1_id = excluded.fighter1_id, fighter2_id = excluded.fighter2_id,
+       ON CONFLICT(id) DO UPDATE SET event_id = COALESCE(NULLIF(excluded.event_id, ''), fights.event_id),
+         fighter1_id = excluded.fighter1_id, fighter2_id = excluded.fighter2_id,
          fighter1_name = excluded.fighter1_name, fighter2_name = excluded.fighter2_name,
          fighter1_nickname = excluded.fighter1_nickname, fighter2_nickname = excluded.fighter2_nickname,
          fighter1_result = excluded.fighter1_result, fighter2_result = excluded.fighter2_result,
@@ -191,6 +221,8 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   if (kind === 'fighter') {
     const p = parseFighter(id, html);
     if (!p.name) unrecognised('fighter page', 'no name');
+    capped('fighter page', p);
+    if (p.event_ids.length > MAX_EVENT_LINKS_PER_PROFILE) unrecognised('fighter page', `${p.event_ids.length} event links`);
     db.prepare(
       `INSERT INTO fighters (id, name, nickname, record, wins, losses, draws, no_contests, height, height_inches,
          weight, weight_lbs, reach, reach_inches, stance, dob, slpm, str_acc, sapm, str_def, td_avg, td_acc, td_def,
@@ -211,8 +243,10 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
     if (opts.mode !== 'sample') {
       // Upcoming cards are linked too; they're fetched once they're on the completed list.
       const known = db.prepare('SELECT 1 FROM events WHERE id = ?1 UNION ALL SELECT 1 FROM upcoming_events WHERE id = ?1');
-      for (const ev of new Set(Array.from(html.matchAll(/event-details\/([0-9a-f]{16})/g), (m) => m[1]))) {
-        if (!known.get(ev)) enqueue(db, eventUrl(ev));
+      for (const ev of p.event_ids) {
+        if (known.get(ev)) continue;
+        if (opts.mode === 'weekly' && (opts.discovered ?? 0) >= MAX_DISCOVERED_EVENTS_PER_RUN) break;
+        if (enqueue(db, eventUrl(ev))) opts.discovered = (opts.discovered ?? 0) + 1;
       }
     }
   }
@@ -242,6 +276,20 @@ export async function drain(
     log(`${sig} received; finishing the current page and stopping`);
     stopping = true;
   };
+  // Only a page's first-ever try counts toward the stop: that is the evidence ufcstats has stopped answering.
+  // Retries of pages that failed before are that page's problem. A 404 is final ('gone'); `pnpm flag` reopens it.
+  const fail = (next: { url: string; attempts: number }, e: unknown, counts: boolean) => {
+    if (!counts) failuresInARow = 0; // ufcstats answered
+    else if (next.attempts === 0) failuresInARow++;
+    const gone = /HTTP 404/.test((e as Error).message);
+    const attempts = next.attempts + 1;
+    db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
+      .run(attempts, String((e as Error).message).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
+    log(`error on ${next.url}: ${(e as Error).message}`);
+    if (failuresInARow >= MAX_FAILURES_IN_A_ROW) {
+      throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${(e as Error).message})`);
+    }
+  };
   const onTerm = () => stop('SIGTERM');
   const onInt = () => stop('SIGINT');
   process.on('SIGTERM', onTerm);
@@ -252,8 +300,16 @@ export async function drain(
       if (opts.maxPages !== undefined && fetched >= opts.maxPages) break;
       const next = nextPending(db);
       if (!next) break;
+      let html: string;
       try {
-        const html = await fetcher.get(next.url);
+        html = await fetcher.get(next.url);
+      } catch (e) {
+        if (e instanceof BlockedError) throw e;
+        // An answered 4xx is about that page, not about being blocked, so it doesn't count toward the stop.
+        fail(next, e, !/HTTP 4\d\d/.test((e as Error).message));
+        continue;
+      }
+      try {
         tx(db, () => {
           db.prepare('INSERT OR REPLACE INTO raw_pages (url, fetched_at, html_gz) VALUES (?, ?, ?)')
             .run(next.url, nowIso(), zlib.gzipSync(html));
@@ -265,18 +321,8 @@ export async function drain(
         failuresInARow = 0;
         if (fetched % 50 === 0) log(`fetched ${fetched} pages (last: ${next.url})`);
       } catch (e) {
-        if (e instanceof BlockedError) throw e;
-        // Only a page's first-ever try counts toward the stop: that is the evidence ufcstats has stopped answering.
-        // Retries of pages that failed before are that page's problem. A 404 is final ('gone'); `pnpm flag` reopens it.
-        if (next.attempts === 0) failuresInARow++;
-        const gone = /HTTP 404/.test((e as Error).message);
-        const attempts = next.attempts + 1;
-        db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
-          .run(attempts, String((e as Error).message).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
-        log(`error on ${next.url}: ${(e as Error).message}`);
-        if (failuresInARow >= MAX_FAILURES_IN_A_ROW) {
-          throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${(e as Error).message})`);
-        }
+        // ufcstats answered; we refused the page. That's the page's problem, not a sign of being blocked.
+        fail(next, e, false);
       }
     }
   } finally {

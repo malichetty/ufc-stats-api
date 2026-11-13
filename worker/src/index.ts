@@ -165,7 +165,10 @@ export default {
       if (limit.blocked) return limit.blocked;
       const base = { ...limit.headers, 'X-Data-Version': meta.version };
 
-      const path = url.pathname.replace(/\/+$/, '') || '/';
+      // A loop, not /\/+$/: that regex backtracks quadratically on a long run of slashes followed by anything else.
+      let end = url.pathname.length;
+      while (end > 0 && url.pathname.charCodeAt(end - 1) === 47) end--;
+      const path = url.pathname.slice(0, end) || '/';
       if (path === '/docs') {
         return new Response(req.method === 'HEAD' ? null : DOCS_HTML, {
           headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': `public, max-age=${CLIENT_TTL}`, ...CORS },

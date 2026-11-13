@@ -22,6 +22,7 @@ const { positionals, values } = parseArgs({
     target: { type: 'string' },
     'max-pages': { type: 'string' },
     'dry-run': { type: 'boolean' },
+    'allow-deletes': { type: 'boolean' },
   },
 });
 const [command, arg] = positionals;
@@ -153,7 +154,7 @@ async function main(): Promise<number> {
     case 'sync': {
       const target = d1Target();
       if (!target) throw new Error('sync needs --target local|remote');
-      sync(openDb(), target, { log, dryRun: values['dry-run'] });
+      sync(openDb(), target, { log, dryRun: values['dry-run'], allowDeletes: values['allow-deletes'] });
       return 0;
     }
     default:

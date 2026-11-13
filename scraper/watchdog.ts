@@ -110,17 +110,24 @@ async function main() {
   log(`today ${now.requests} requests, ${now.rowsRead} rows read (caps ${caps.requests}, ${caps.rowsRead}; plan ${plan}); yesterday ${prev.requests}, ${prev.rowsRead}`);
 
   const over = now.requests > caps.requests || now.rowsRead > caps.rowsRead;
-  if (over && !state.detachedOn) {
+  if (over) {
+    // Every over-cap tick checks the live attachment rather than trusting watchdog.json: a `wrangler deploy` or a
+    // dashboard change re-attaches the domain, and the pause has to hold for the rest of the UTC day regardless.
     let detached = false;
+    let found = 0;
     try {
-      const domains = (await cf(tok, 'GET', `accounts/${accountId()}/workers/domains?hostname=${HOSTNAME}`)).result as { id: string }[];
-      for (const d of domains) await cf(tok, 'DELETE', `accounts/${accountId()}/workers/domains/${d.id}`);
-      detached = domains.length > 0;
+      const domains = (await cf(tok, 'GET', `accounts/${accountId()}/workers/domains?hostname=${HOSTNAME}`)).result as
+        { id: string; hostname: string; service: string }[];
+      const ours = domains.filter((d) => d.hostname === HOSTNAME && d.service === SCRIPT);
+      found = ours.length;
+      for (const d of ours) await cf(tok, 'DELETE', `accounts/${accountId()}/workers/domains/${d.id}`);
+      detached = true;
     } catch (e) {
       log(`detach failed: ${(e as Error).message}`);
     }
-    let killSet = false;
-    if (!detached) {
+    // The kill flag is the second layer: if the domain comes back between ticks, the Worker still answers 503.
+    let killSet = state.killSet;
+    if (!killSet) {
       try {
         setKill(true);
         killSet = true;
@@ -134,10 +141,14 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    writeState({ detachedOn: today, killSet });
-    alert('PAUSED', `Usage over the daily cap (${now.requests} requests, ${now.rowsRead} D1 rows read). ` +
-      `${detached ? `Custom domain ${HOSTNAME} detached.` : 'Domain detach failed; D1 kill flag set (Worker answers 503).'} ` +
-      'It comes back automatically on the next UTC day if usage stays under the cap.');
+    if (!state.detachedOn) {
+      alert('PAUSED', `Usage over the daily cap (${now.requests} requests, ${now.rowsRead} D1 rows read). ` +
+        `${detached ? `Custom domain ${HOSTNAME} detached` : 'Domain detach failed'}${killSet ? ' and D1 kill flag set (Worker answers 503)' : ''}. ` +
+        'It comes back automatically on the next UTC day if usage stays under the cap.');
+    } else if (found) {
+      alert('REATTACHED-WHILE-PAUSED', `${HOSTNAME} was attached again while usage is over the cap; detached again.`);
+    }
+    writeState({ detachedOn: state.detachedOn ?? today, killSet });
     return;
   }
 

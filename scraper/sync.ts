@@ -26,23 +26,34 @@ const sqlValue = (v: string | number | null): string =>
 
 const hash = (r: Row) => crypto.createHash('sha1').update(JSON.stringify(r)).digest('hex');
 
+const tupleOf = (cols: string[], r: Row) => `(${cols.map((c) => sqlValue(r[c])).join(', ')})`;
+const headOf = (verb: string, table: string, cols: string[]) => `${verb} INTO ${table} (${cols.join(', ')}) VALUES\n`;
+
+/** D1's limit is in bytes; string length counts UTF-16 units and lets multi-byte text through. */
+function fits(table: string, r: Row, verb = 'INSERT OR REPLACE'): boolean {
+  const cols = Object.keys(r);
+  return Buffer.byteLength(headOf(verb, table, cols)) + Buffer.byteLength(tupleOf(cols, r)) + 1 <= MAX_STATEMENT_BYTES;
+}
+
 function inserts(table: string, rows: Row[], verb = 'INSERT OR REPLACE'): string[] {
   if (rows.length === 0) return [];
   const cols = Object.keys(rows[0]);
-  const head = `${verb} INTO ${table} (${cols.join(', ')}) VALUES\n`;
+  const head = headOf(verb, table, cols);
+  const headBytes = Buffer.byteLength(head);
   const out: string[] = [];
   let batch: string[] = [];
-  let size = head.length;
+  let size = headBytes;
   for (const r of rows) {
-    const tuple = `(${cols.map((c) => sqlValue(r[c])).join(', ')})`;
-    if (tuple.length + head.length > MAX_STATEMENT_BYTES) throw new Error(`${table} row ${r.id} is too large for one D1 statement`);
-    if (batch.length && size + tuple.length + 2 > MAX_STATEMENT_BYTES) {
+    const tuple = tupleOf(cols, r);
+    const bytes = Buffer.byteLength(tuple);
+    if (headBytes + bytes + 1 > MAX_STATEMENT_BYTES) throw new Error(`${table} row ${r.id ?? r.key} is too large for one D1 statement`);
+    if (batch.length && size + bytes + 2 > MAX_STATEMENT_BYTES) {
       out.push(head + batch.join(',\n') + ';');
       batch = [];
-      size = head.length;
+      size = headBytes;
     }
     batch.push(tuple);
-    size += tuple.length + 2;
+    size += bytes + 2;
   }
   out.push(head + batch.join(',\n') + ';');
   return out;
@@ -65,7 +76,9 @@ export interface SyncResult {
  * Load what changed since the last load into D1, as one SQL file run by `wrangler d1 execute`.
  * Nothing changed means nothing is written and the data version stays the same.
  */
-export function sync(db: DatabaseSync, target: Target, opts: { log?: (m: string) => void; dryRun?: boolean } = {}): SyncResult {
+export function sync(
+  db: DatabaseSync, target: Target, opts: { log?: (m: string) => void; dryRun?: boolean; allowDeletes?: boolean } = {},
+): SyncResult {
   const log = opts.log ?? console.log;
   const live = new Set((db.prepare(`SELECT id FROM served WHERE target = ? AND tbl = 'events'`).all(target) as { id: string }[]).map((r) => r.id));
   const built = build(db, live);
@@ -79,6 +92,7 @@ export function sync(db: DatabaseSync, target: Target, opts: { log?: (m: string)
   const goneKeys: { tbl: string; id: string }[] = [];
   const changed: Record<string, number> = {};
   const deleted: Record<string, number> = {};
+  const skipped: string[] = [];
 
   const keyOf = (tbl: string, r: Row) => String(tbl === 'meta' ? r.key : r.id);
   for (const tbl of ['events', 'fights', 'fighters', 'meta'] as const) {
@@ -88,13 +102,22 @@ export function sync(db: DatabaseSync, target: Target, opts: { log?: (m: string)
     for (const r of rows) {
       const id = keyOf(tbl, r);
       present.add(id);
+      // A row too big for one statement stays out of this load and out of `served`, so it is retried next run instead
+      // of blocking every other row.
+      if (!fits(tbl, r)) { skipped.push(`${tbl}:${id}`); continue; }
       const h = hash(r);
       if (served.get(`${tbl}:${id}`) !== h) {
         todo.push(r);
         newHashes.push({ tbl, id, hash: h });
       }
     }
-    const gone = [...served.keys()].filter((k) => k.startsWith(`${tbl}:`)).map((k) => k.slice(tbl.length + 1)).filter((id) => !present.has(id));
+    const servedIds = [...served.keys()].filter((k) => k.startsWith(`${tbl}:`)).map((k) => k.slice(tbl.length + 1));
+    const gone = servedIds.filter((id) => !present.has(id));
+    // Published rows are almost never withdrawn; a load that would delete many is a bad page or a bug, not news.
+    if (tbl !== 'meta' && !opts.allowDeletes && gone.length > Math.max(5, servedIds.length * 0.01)) {
+      throw new Error(`sync(${target}) would delete ${gone.length} of ${servedIds.length} published ${tbl}; nothing loaded. ` +
+        'Check the scraper data, then run `pnpm sync --target <target> --allow-deletes` if it is right.');
+    }
     changed[tbl] = todo.length;
     deleted[tbl] = gone.length;
     const pk = tbl === 'meta' ? 'key' : 'id';
@@ -111,6 +134,7 @@ export function sync(db: DatabaseSync, target: Target, opts: { log?: (m: string)
     statements.push(...inserts(tbl, todo));
   }
 
+  if (skipped.length) log(`sync(${target}): skipped ${skipped.length} row(s) too large for one D1 statement: ${skipped.slice(0, 20).join(' ')}`);
   const total = Object.values(changed).reduce((a, b) => a + b, 0) + Object.values(deleted).reduce((a, b) => a + b, 0);
   if (total === 0) {
     log(`sync(${target}): nothing changed, nothing written`);
