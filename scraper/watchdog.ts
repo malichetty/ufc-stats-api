@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { alert } from './alert.ts';
 import { DATA_DIR } from './db.ts';
 import { accountId, D1_NAME, REPO_ROOT, runWrangler } from './sync.ts';
 
@@ -32,8 +33,6 @@ const caps = {
 };
 
 const STATE = path.join(DATA_DIR, 'watchdog.json');
-/** UFC_ALERT_DIR: a folder the owner watches. */
-const ALERT_DIR = process.env.UFC_ALERT_DIR ?? path.join(DATA_DIR, 'alerts');
 const log = (m: string) => console.log(`[${new Date().toISOString()}] ${m}`);
 
 interface State { detachedOn: string | null; killSet: boolean }
@@ -77,14 +76,6 @@ async function usage(tok: string, date: string, databaseId: string) {
     requests: a.w.reduce((t: number, r: any) => t + r.sum.requests, 0),
     rowsRead: a.d.reduce((t: number, r: any) => t + r.sum.rowsRead, 0),
   };
-}
-
-function alert(title: string, text: string) {
-  log(`${title}: ${text}`);
-  try {
-    fs.mkdirSync(ALERT_DIR, { recursive: true });
-    fs.writeFileSync(path.join(ALERT_DIR, `UFC-API-${title.replace(/\W+/g, '-')}.txt`), `${new Date().toISOString()}\n${text}\n`);
-  } catch { /* the alert folder may not be writable */ }
 }
 
 function databaseId(): string {

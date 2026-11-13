@@ -79,9 +79,9 @@ pnpm e2e                          # end-to-end checks against `pnpm dev`
 
 A change to the serving tables ships in this order: `wrangler d1 migrations apply ufc-stats --remote`, then `wrangler deploy`, then `pnpm sync --target remote`. Syncing first would let the old Worker page the new rows and cache the result under the new data version. A migration that drops something the live Worker still reads (like 0003, which drops `api_keys`) goes after `wrangler deploy` instead.
 
-Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
+Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts, and a note when a weekly run stops or fails, go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
 
-Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 failures in a row, and doesn't retry harder.
+Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, 5 unanswered pages in a row (timeouts, 5xx), or 30 answered but unusable pages in a row (404s, pages that don't parse), and doesn't retry harder.
 
 ## License
 

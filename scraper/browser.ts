@@ -27,7 +27,6 @@ export class Fetcher {
     this.browser = await chromium.launch({
       headless: true, chromiumSandbox: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       proxy: { server: 'http://127.0.0.1:9', bypass: 'ufcstats.com,<-loopback>' },
-      args: process.env.UFC_TEST_HOST_RULES ? [`--host-resolver-rules=${process.env.UFC_TEST_HOST_RULES}`] : [],
     });
     this.ctx = await this.browser.newContext({
       acceptDownloads: false,

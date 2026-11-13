@@ -34,6 +34,8 @@ const MAX_EVENT_LINKS_PER_PROFILE = 100;
 const MAX_DISCOVERED_EVENTS_PER_RUN = 25;
 /** Stored text fields are at most ~150 characters on ufcstats; a field far over that is a broken or hostile page. */
 const MAX_TEXT = 2_000;
+/** Answered but unusable (404, refused page): over a weekly run's discovery cap in a row means ufcstats changed. */
+const MAX_UNUSABLE_IN_A_ROW = MAX_DISCOVERED_EVENTS_PER_RUN + MAX_FAILURES_IN_A_ROW;
 
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
@@ -104,14 +106,14 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
   }
 
   if (kind === 'upcoming_list') {
-    const upcoming = parseEventsList(html);
-    capped('upcoming-events list', upcoming);
-    // A card on the completed list can't be upcoming; naming one would withhold it from the next build.
+    const parsed = parseEventsList(html);
+    capped('upcoming-events list', parsed);
+    // The completed list wins: a card on it can't also be upcoming, or the next build would withhold it. Dropped, not
+    // refused, because a stored upcoming page older than the completed one overlaps it and would abort a reparse.
     const done = db.prepare('SELECT 1 FROM events WHERE id = ? AND listed = 1');
-    const clash = upcoming.filter((e) => done.get(e.id)).length;
-    if (clash) unrecognised('upcoming-events list', `${clash} event(s) already on the completed list`);
+    const upcoming = parsed.filter((e) => !done.get(e.id));
     const hadUpcoming = (db.prepare('SELECT COUNT(*) n FROM upcoming_events').get() as { n: number }).n;
-    if (upcoming.length === 0 && hadUpcoming > 0) unrecognised('upcoming-events list', `0 events, ${hadUpcoming} stored`);
+    if (parsed.length === 0 && hadUpcoming > 0) unrecognised('upcoming-events list', `0 events, ${hadUpcoming} stored`);
     // Fighter-profile discovery skips upcoming cards, so a card that leaves this list without reaching the completed
     // list (ufcstats merged Road to UFC 4.6 into another event) is fetched here instead.
     const still = new Set(upcoming.map((e) => e.id));
@@ -245,7 +247,12 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
       const known = db.prepare('SELECT 1 FROM events WHERE id = ?1 UNION ALL SELECT 1 FROM upcoming_events WHERE id = ?1');
       for (const ev of p.event_ids) {
         if (known.get(ev)) continue;
-        if (opts.mode === 'weekly' && (opts.discovered ?? 0) >= MAX_DISCOVERED_EVENTS_PER_RUN) break;
+        if (opts.mode === 'weekly' && (opts.discovered ?? 0) >= MAX_DISCOVERED_EVENTS_PER_RUN) {
+          // Over this run's cap: flag the profile so the next weekly run reads it again and queues the rest.
+          db.prepare('INSERT OR REPLACE INTO flags (url, flagged_at) VALUES (?, ?)').run(url, now);
+          (opts.log ?? console.log)(`discovery cap of ${MAX_DISCOVERED_EVENTS_PER_RUN} events reached; ${url} is read again next run`);
+          break;
+        }
         if (enqueue(db, eventUrl(ev))) opts.discovered = (opts.discovered ?? 0) + 1;
       }
     }
@@ -271,23 +278,33 @@ export async function drain(
   await fetcher.open();
   let fetched = 0;
   let failuresInARow = 0;
+  let unusable: string[] = [];
   let stopping = false;
   const stop = (sig: string) => {
     log(`${sig} received; finishing the current page and stopping`);
     stopping = true;
   };
-  // Only a page's first-ever try counts toward the stop: that is the evidence ufcstats has stopped answering.
-  // Retries of pages that failed before are that page's problem. A 404 is final ('gone'); `pnpm flag` reopens it.
-  const fail = (next: { url: string; attempts: number }, e: unknown, counts: boolean) => {
-    if (!counts) failuresInARow = 0; // ufcstats answered
-    else if (next.attempts === 0) failuresInARow++;
-    const gone = /HTTP 404/.test((e as Error).message);
+  // Only a page's first-ever try counts toward a stop; retries of pages that failed before are that page's problem.
+  // No answer (timeout, 5xx, challenge) stops after 5 in a row: the sign ufcstats stopped answering. An answer we can't
+  // use (4xx, a page ingest refuses) is usually about that page, and a poisoned profile can queue 25 of them, so those
+  // stop only after 30 in a row; the 404s in that streak go back to pending rather than staying 'gone'.
+  // A 404 is otherwise final ('gone'); `pnpm flag` reopens it.
+  const fail = (next: { url: string; attempts: number }, e: unknown, answered: boolean) => {
+    const msg = (e as Error).message;
+    const gone = /HTTP 404/.test(msg);
     const attempts = next.attempts + 1;
     db.prepare(`UPDATE pages SET attempts = ?, last_error = ?, status = ? WHERE url = ?`)
-      .run(attempts, String((e as Error).message).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
-    log(`error on ${next.url}: ${(e as Error).message}`);
-    if (failuresInARow >= MAX_FAILURES_IN_A_ROW) {
-      throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${(e as Error).message})`);
+      .run(attempts, String(msg).slice(0, 500), gone ? 'gone' : attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', next.url);
+    log(`error on ${next.url}: ${msg}`);
+    if (next.attempts > 0) return;
+    if (!answered && ++failuresInARow >= MAX_FAILURES_IN_A_ROW) {
+      throw new BlockedError(`${MAX_FAILURES_IN_A_ROW} page failures in a row; stopping (last: ${msg})`);
+    }
+    if (answered) unusable.push(next.url);
+    if (unusable.length >= MAX_UNUSABLE_IN_A_ROW) {
+      db.prepare(`UPDATE pages SET status = 'pending' WHERE status = 'gone' AND url IN (SELECT value FROM json_each(?))`)
+        .run(JSON.stringify(unusable));
+      throw new BlockedError(`${MAX_UNUSABLE_IN_A_ROW} unusable answers in a row (404 or refused); stopping (last: ${msg})`);
     }
   };
   const onTerm = () => stop('SIGTERM');
@@ -305,8 +322,7 @@ export async function drain(
         html = await fetcher.get(next.url);
       } catch (e) {
         if (e instanceof BlockedError) throw e;
-        // An answered 4xx is about that page, not about being blocked, so it doesn't count toward the stop.
-        fail(next, e, !/HTTP 4\d\d/.test((e as Error).message));
+        fail(next, e, /HTTP 4\d\d/.test((e as Error).message));
         continue;
       }
       try {
@@ -319,10 +335,10 @@ export async function drain(
         });
         fetched++;
         failuresInARow = 0;
+        unusable = [];
         if (fetched % 50 === 0) log(`fetched ${fetched} pages (last: ${next.url})`);
       } catch (e) {
-        // ufcstats answered; we refused the page. That's the page's problem, not a sign of being blocked.
-        fail(next, e, false);
+        fail(next, e, true);
       }
     }
   } finally {

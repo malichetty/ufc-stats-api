@@ -322,7 +322,8 @@ test('an upcoming-list page cannot withdraw a published event, and neither can a
   const list = (ids: string[]) => `<table>${ids.map((i) => `<tr class="b-statistics__table-row"><td>
     <a href="http://ufcstats.com/event-details/${i}">UFC 7</a><span class="b-statistics__date">December 05, 2099</span></td><td>Vegas</td></tr>`).join('')}</table>`;
   db.prepare(`INSERT OR REPLACE INTO events (id, name, date, listed, first_seen_at) VALUES (?, 'UFC 7', '2020-11-07', 1, 'x')`).run(ev);
-  assert.throws(() => ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', list([ev]), opts), /already on the completed list/);
+  ingest(db, 'http://ufcstats.com/statistics/events/upcoming?page=all', list([ev, '7d7d7d7d7d7d7d7d']), opts);
+  assert.deepEqual((db.prepare('SELECT id FROM upcoming_events').all() as { id: string }[]).map((r) => r.id), ['7d7d7d7d7d7d7d7d']);
   ingest(db, `http://ufcstats.com/event-details/${ev}`, eventPage('win').replace(new RegExp(EVENT, 'g'), ev).replace(new RegExp(FIGHT, 'g'), '7c7c7c7c7c7c7c7c').replace('November 07, 2026', 'December 01, 2099'), opts);
   assert.ok(build(db, new Set([ev])).events.some((e) => e.id === ev), 'a live event dated in the future stays published');
 });
@@ -335,20 +336,18 @@ test('a load that would delete many published rows is refused unless allowed', a
   assert.equal(sync(db, 'mass' as 'remote', { dryRun: true, allowDeletes: true, log: () => {} }).deleted.fights, 20);
 });
 
-test('an oversized text field is refused at ingest, and an oversized row is skipped instead of blocking the load', async () => {
+test('an oversized text field is refused at ingest, and statement size is measured in bytes', async () => {
   const { sync } = await import('../scraper/sync.ts');
   const db = openDb();
   const opts = { mode: 'weekly' as const };
   const page = (nick: string) => `<html><body><span class="b-content__title-highlight">Long Nick</span><p class="b-content__Nickname">${nick}</p></body></html>`;
   assert.throws(() => ingest(db, 'http://ufcstats.com/fighter-details/8b8b8b8b8b8b8b8b', page('A'.repeat(46_000)), opts), /nickname is 46000 characters/);
-  // A row that still can't fit (multi-byte text counts in bytes) is left out and retried; the rest goes out.
-  db.prepare(`INSERT OR REPLACE INTO fighters (id, name, nickname, profile_scraped_at) VALUES ('8c8c8c8c8c8c8c8c', 'Wide', ?, 'x')`).run('漢'.repeat(20_000));
-  db.prepare(`INSERT OR REPLACE INTO fighters (id, name, profile_scraped_at) VALUES ('8d8d8d8d8d8d8d8d', 'Normal', 'x')`).run();
-  const logs: string[] = [];
-  const res = sync(db, 'remote', { dryRun: true, allowDeletes: true, log: (m) => logs.push(m) });
-  assert.ok(res.file && fs.readFileSync(res.file, 'utf8').includes("'8d8d8d8d8d8d8d8d'"), 'the normal fighter is loaded');
-  assert.ok(logs.some((l) => l.includes('fighters:8c8c8c8c8c8c8c8c')), 'the oversized row is reported');
+  // The name lands in four columns of the row: 40,000 UTF-16 units (under the limit by length) but 120,000 bytes.
+  db.prepare(`INSERT OR REPLACE INTO fighters (id, name, profile_scraped_at) VALUES ('8c8c8c8c8c8c8c8c', ?, 'x')`).run('漢'.repeat(10_000));
+  assert.throws(() => sync(db, 'remote', { dryRun: true, allowDeletes: true, log: () => {} }), /too large for one D1 statement/);
+  db.prepare(`DELETE FROM fighters WHERE id = '8c8c8c8c8c8c8c8c'`).run();
 });
+
 
 test('a fighter page linking many unknown events cannot stop the weekly crawl', async () => {
   const { drain } = await import('../scraper/crawl.ts');
@@ -396,4 +395,40 @@ test('rotating /64s inside one IPv6 /48 cannot multiply the daily allowance', as
     }
   } finally { Date.now = realNow; }
   assert.equal(served, 4000);
+});
+
+test('a weekly run that hits the discovery cap flags the profile so the rest is queued next run', async () => {
+  const db = openDb();
+  const opts: { mode: 'weekly'; discovered?: number } = { mode: 'weekly' };
+  db.exec('DELETE FROM flags');
+  const ids = Array.from({ length: 30 }, (_, i) => (i + 1).toString(16).padStart(16, 'a'));
+  const profile = `<html><body><span class="b-content__title-highlight">Many Cards</span><table><tbody>
+    ${ids.map((i) => `<tr class="b-fight-details__table-row"><td><a href="http://ufcstats.com/event-details/${i}">x</a></td></tr>`).join('')}</tbody></table></body></html>`;
+  const url = 'http://ufcstats.com/fighter-details/9c9c9c9c9c9c9c9c';
+  ingest(db, url, profile, opts);
+  assert.equal(opts.discovered, 25);
+  assert.ok(db.prepare('SELECT 1 FROM flags WHERE url = ?').get(url), 'profile flagged for the next run');
+});
+
+test('ufcstats answering 404 for everything stops the run without marking the queue gone', async () => {
+  const { drain, BlockedError } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  db.exec('DELETE FROM pages');
+  for (let i = 0; i < 60; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, 'd')}`);
+  const fetcher = { open: async () => {}, close: async () => {}, get: async () => { throw new Error('HTTP 404'); } };
+  await assert.rejects(drain(db, { mode: 'weekly', log: () => {} }, fetcher), BlockedError);
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM pages WHERE status = 'gone'`).get() as { n: number }).n, 0);
+});
+
+test('five first-try timeouts or 5xx answers in a row still stop the run', async () => {
+  const { drain, BlockedError } = await import('../scraper/crawl.ts');
+  for (const err of ['Timeout 45000ms exceeded', 'HTTP 502']) {
+    const db = openDb();
+    db.exec('DELETE FROM pages');
+    for (let i = 0; i < 8; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, 'c')}`);
+    let calls = 0;
+    const fetcher = { open: async () => {}, close: async () => {}, get: async () => { calls++; throw new Error(err); } };
+    await assert.rejects(drain(db, { mode: 'weekly', log: () => {} }, fetcher), BlockedError);
+    assert.equal(calls, 5);
+  }
 });

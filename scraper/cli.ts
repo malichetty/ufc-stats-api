@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { alert } from './alert.ts';
 import { BlockedError, drain, enqueue, reparse, seed, status, unpublished, type CrawlOptions } from './crawl.ts';
 import { nowIso, openDb } from './db.ts';
 import { kindOf } from './parse.ts';
@@ -90,10 +91,12 @@ async function crawlRun(opts: CrawlOptions): Promise<number> {
   } catch (e) {
     if (e instanceof BlockedError) {
       outcome = `stopped: ${e.message}`;
-      log(`STOPPED. ${e.message}. Not retrying; check ufcstats in a browser before running again.`);
+      alert('RUN-STOPPED', `${e.message}. Not retrying; check ufcstats in a browser before running again.`);
       code = EXIT_BLOCKED;
     } else {
       outcome = `error: ${(e as Error).message}`;
+      // Nothing was published; every later run fails the same way (a refused mass delete needs --allow-deletes).
+      alert('RUN-FAILED', outcome);
       throw e;
     }
   } finally {

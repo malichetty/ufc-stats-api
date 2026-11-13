@@ -29,12 +29,6 @@ const hash = (r: Row) => crypto.createHash('sha1').update(JSON.stringify(r)).dig
 const tupleOf = (cols: string[], r: Row) => `(${cols.map((c) => sqlValue(r[c])).join(', ')})`;
 const headOf = (verb: string, table: string, cols: string[]) => `${verb} INTO ${table} (${cols.join(', ')}) VALUES\n`;
 
-/** D1's limit is in bytes; string length counts UTF-16 units and lets multi-byte text through. */
-function fits(table: string, r: Row, verb = 'INSERT OR REPLACE'): boolean {
-  const cols = Object.keys(r);
-  return Buffer.byteLength(headOf(verb, table, cols)) + Buffer.byteLength(tupleOf(cols, r)) + 1 <= MAX_STATEMENT_BYTES;
-}
-
 function inserts(table: string, rows: Row[], verb = 'INSERT OR REPLACE'): string[] {
   if (rows.length === 0) return [];
   const cols = Object.keys(rows[0]);
@@ -46,6 +40,8 @@ function inserts(table: string, rows: Row[], verb = 'INSERT OR REPLACE'): string
   for (const r of rows) {
     const tuple = tupleOf(cols, r);
     const bytes = Buffer.byteLength(tuple);
+    // Measured in bytes, D1's unit. A row can't be skipped instead: build() has already numbered the dense seq paging
+    // and the counts with it in. Ingest caps every text field, so this only fires on a real bug.
     if (headBytes + bytes + 1 > MAX_STATEMENT_BYTES) throw new Error(`${table} row ${r.id ?? r.key} is too large for one D1 statement`);
     if (batch.length && size + bytes + 2 > MAX_STATEMENT_BYTES) {
       out.push(head + batch.join(',\n') + ';');
@@ -92,7 +88,6 @@ export function sync(
   const goneKeys: { tbl: string; id: string }[] = [];
   const changed: Record<string, number> = {};
   const deleted: Record<string, number> = {};
-  const skipped: string[] = [];
 
   const keyOf = (tbl: string, r: Row) => String(tbl === 'meta' ? r.key : r.id);
   for (const tbl of ['events', 'fights', 'fighters', 'meta'] as const) {
@@ -102,9 +97,6 @@ export function sync(
     for (const r of rows) {
       const id = keyOf(tbl, r);
       present.add(id);
-      // A row too big for one statement stays out of this load and out of `served`, so it is retried next run instead
-      // of blocking every other row.
-      if (!fits(tbl, r)) { skipped.push(`${tbl}:${id}`); continue; }
       const h = hash(r);
       if (served.get(`${tbl}:${id}`) !== h) {
         todo.push(r);
@@ -134,7 +126,6 @@ export function sync(
     statements.push(...inserts(tbl, todo));
   }
 
-  if (skipped.length) log(`sync(${target}): skipped ${skipped.length} row(s) too large for one D1 statement: ${skipped.slice(0, 20).join(' ')}`);
   const total = Object.values(changed).reduce((a, b) => a + b, 0) + Object.values(deleted).reduce((a, b) => a + b, 0);
   if (total === 0) {
     log(`sync(${target}): nothing changed, nothing written`);
