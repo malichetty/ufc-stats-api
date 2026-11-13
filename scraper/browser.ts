@@ -18,9 +18,18 @@ export class Fetcher {
   private lastAt = 0;
 
   async open(): Promise<void> {
-    // Signals are handled by drain() so the current page finishes and the run ends cleanly.
-    this.browser = await chromium.launch({ headless: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false });
+    // Signals are handled by drain() so the current page finishes and the run ends cleanly. ufcstats only serves plain
+    // http (its port 443 refuses connections), so anyone on the network path can feed this browser script: keep
+    // Chromium's process sandbox on (Playwright turns it off unless asked) and refuse downloads.
+    // Egress allowlist at the network layer: every host but ufcstats.com is sent to a closed local port and fails, which
+    // also covers redirect hops, WebSockets and IP-literal URLs that the route filter below can't see. `<-loopback>`
+    // stops Chromium from exempting localhost. This is not a proxy service: ufcstats.com is always reached directly.
+    this.browser = await chromium.launch({
+      headless: true, chromiumSandbox: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
+      proxy: { server: 'http://127.0.0.1:9', bypass: 'ufcstats.com,<-loopback>' },
+    });
     this.ctx = await this.browser.newContext({
+      acceptDownloads: false,
       userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/${this.browser.version()} Safari/537.36 ufc-stats-api/2.0 (+https://github.com/malichetty/ufc-stats-api)`,
     });
     await this.ctx.route('**/*', (route) => {
@@ -31,6 +40,8 @@ export class Fetcher {
       }
       return route.continue();
     });
+    // The route filter above never sees WebSockets, and sees only the first hop of a redirect (checked in get()).
+    await this.ctx.routeWebSocket(/.*/, (ws) => ws.close());
     this.page = await this.ctx.newPage();
   }
 
@@ -50,6 +61,7 @@ export class Fetcher {
       throw new BlockedError(`ufcstats answered HTTP ${status} for ${url}`);
     }
     if (status >= 400) throw new Error(`HTTP ${status}`);
+    if (new URL(this.page.url()).hostname !== 'ufcstats.com') throw new Error(`redirected off ufcstats.com to ${new URL(this.page.url()).hostname}`);
     try {
       // The challenge page has no footer; the real page does. 30 s covers the check and its reload.
       await this.page.waitForSelector('.b-foot', { state: 'attached', timeout: 30_000 });

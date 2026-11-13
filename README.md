@@ -18,9 +18,12 @@ IDs are ufcstats' own 16-character IDs, so `f4c49976c75c5ab2` is Conor McGregor 
 
 Free, with no sign-up and no API key.
 
-| Per IP (IPv6: per /64) | Per minute | Per day |
+| Limit | Per minute | Per day |
 |---|---|---|
-| Everyone | 30 | about 1,000 (counted per Cloudflare data centre) |
+| Per IP (IPv6: per /64) | 30 | about 1,000 |
+| Per IPv6 network (/48) | 120 | about 4,000 |
+
+Daily counts are kept per Cloudflare data centre, so they are approximate.
 
 Past a limit you get `429` with a `Retry-After` header. Responses are cached at the edge for a week (each Sunday's update starts a new cache), and clients may reuse them for 5 minutes.
 
@@ -55,6 +58,7 @@ ufcstats.com ──(headless Chromium, 1 page / 2.5 s+)──► scraper SQLite 
 ```
 
 - `scraper/`: runs on a Mac. A headless Chromium loads each page like a visitor's browser would (ufcstats checks for JavaScript), one at a time with a 2.5 s+ gap. Every page is stored gzipped, so parser fixes re-parse stored pages instead of re-crawling.
+  ufcstats only serves plain http, so the scraper treats every page as untrusted: Chromium runs with its sandbox on and can reach no host but ufcstats.com, pages with implausible content are refused before anything is stored, a row too large for one database statement is loaded slimmed rather than failing the load, an event page can't move a fight that has its own page (it gets that fight page checked again), and a load that would delete more than a few published rows stops (`pnpm sync --target remote --allow-deletes` overrides it after a check).
 - `worker/`: the Cloudflare Worker and D1 schema. The scraper prebuilds each JSON response, so a detail request is one primary-key read and most requests never reach D1.
 - launchd runs the weekly job on Sunday and Monday at 14:00 Eastern, and the usage watchdog every 2 minutes.
 
@@ -75,9 +79,9 @@ pnpm e2e                          # end-to-end checks against `pnpm dev`
 
 A change to the serving tables ships in this order: `wrangler d1 migrations apply ufc-stats --remote`, then `wrangler deploy`, then `pnpm sync --target remote`. Syncing first would let the old Worker page the new rows and cache the result under the new data version. A migration that drops something the live Worker still reads (like 0003, which drops `api_keys`) goes after `wrangler deploy` instead.
 
-Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
+Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts, and a note when a weekly run stops or fails, go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
 
-Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 failures in a row, and doesn't retry harder.
+Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 unanswered pages in a row (timeouts, 5xx), and doesn't retry harder. Pages ufcstats answers but that can't be used (404s, pages that don't parse) don't count toward that; 30 of those in a row end the fetching with an alert (a layout change, most likely), are kept as failing rather than gone and retried once a run, and the load still runs.
 
 ## License
 

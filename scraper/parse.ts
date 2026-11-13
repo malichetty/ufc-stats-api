@@ -376,6 +376,8 @@ export function parseFight(id: string, html: string): ParsedFight {
 
 export interface ParsedFighter {
   id: string;
+  /** Events linked from the fight-history table (the only place ufcstats links off-list cards). */
+  event_ids: string[];
   name: string;
   nickname: string | null;
   record: string | null;
@@ -440,5 +442,6 @@ export function parseFighter(id: string, html: string): ParsedFighter {
     td_acc: parsePct(info['td acc.'] ?? ''),
     td_def: parsePct(info['td def.'] ?? ''),
     sub_avg: parseNum(info['sub. avg.'] ?? ''),
+    event_ids: [...new Set($('tr.b-fight-details__table-row a[href*="/event-details/"]').map((_, a) => idFrom($(a).attr('href'), 'event')).get().filter(Boolean) as string[])],
   };
 }

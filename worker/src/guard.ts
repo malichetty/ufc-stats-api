@@ -103,7 +103,10 @@ export async function enforce(env: Env, client: Client & { block: string }, orig
     // After the per-IP minute, so one noisy /64 can't fill its /48's bucket on its own.
     ...(client.block !== client.id
       ? [{ key: `__min/${minute}/${client.block}`, limit: Number(env.BLOCK_PER_MINUTE), ttl: toNextMinute,
-          detail: 'Too many requests from this network. Wait a minute.' }]
+          detail: 'Too many requests from this network. Wait a minute.' },
+         // Without a network-wide day count, each /64 of a /48 would get its own daily allowance.
+         { key: `__day/${day}/${client.block}`, limit: Number(env.BLOCK_PER_DAY), ttl: toMidnight,
+          detail: 'Daily allowance for this network used. It resets at 00:00 UTC.' }]
       : []),
     { key: `__day/${day}/${client.id}`, limit: client.perDay!, ttl: toMidnight,
       detail: `Daily allowance of ${client.perDay} requests used. It resets at 00:00 UTC.` },
