@@ -295,7 +295,7 @@ test('the watchdog keeps the API paused when the domain is re-attached the same 
   assert.equal(ticks[1].kill, true, 'the D1 kill flag backs the pause');
 });
 
-test('one event page cannot move a published fight to another event, so sync keeps it', async () => {
+test('one event page cannot move or change a published fight of another event, so sync keeps it', async () => {
   const { sync } = await import('../scraper/sync.ts');
   const db = openDb();
   const opts = { mode: 'weekly' as const };
@@ -309,8 +309,8 @@ test('one event page cannot move a published fight to another event, so sync kee
   for (const t of ['events', 'fights'] as const) for (const r of build(db)[t]) {
     db.prepare(`INSERT OR REPLACE INTO served (target, tbl, id, hash) VALUES ('remote', ?, ?, 'x')`).run(t, r.id);
   }
-  ingest(db, `http://ufcstats.com/event-details/${fake}`, card(fake, 'December 01, 2099'), opts);
-  assert.equal((db.prepare('SELECT event_id FROM fights WHERE id = ?').get(fight) as { event_id: string }).event_id, real);
+  ingest(db, `http://ufcstats.com/event-details/${fake}`, card(fake, 'December 01, 2099').replace('Lightweight', 'Heavyweight'), opts);
+  assert.deepEqual({ ...(db.prepare('SELECT event_id, weight_class FROM fights WHERE id = ?').get(fight) as object) }, { event_id: real, weight_class: 'Lightweight' });
   assert.equal(sync(db, 'remote', { dryRun: true, log: () => {} }).deleted.fights, 0);
 });
 
@@ -436,11 +436,10 @@ test('ufcstats answering 404 for everything marks nothing gone, run after run', 
     seed(db, { mode: 'weekly' });
     await drain(db, { mode: 'weekly', log: () => {} }, fetcher);
     assert.equal((db.prepare(`SELECT COUNT(*) n FROM pages WHERE status = 'gone'`).get() as { n: number }).n, 0);
-    assert.equal(status(db, 'http://ufcstats.com/fight-details/ddddddddddddddd0'), 'failed');
   }
 });
 
-test('five first-try timeouts or 5xx answers in a row still stop the run', async () => {
+test('five first-try timeouts or 5xx answers in a row still stop the run, and only in a row', async () => {
   const { drain, BlockedError } = await import('../scraper/crawl.ts');
   for (const err of ['Timeout 45000ms exceeded', 'HTTP 502']) {
     const db = openDb();
@@ -451,4 +450,22 @@ test('five first-try timeouts or 5xx answers in a row still stop the run', async
     await assert.rejects(drain(db, { mode: 'weekly', log: () => {} }, fetcher), BlockedError);
     assert.equal(calls, 5);
   }
+  // Not in a row: ufcstats answered in between, so it is still there.
+  const db = openDb();
+  db.exec('DELETE FROM pages');
+  for (let i = 0; i < 10; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, 'c')}`);
+  let n = 0;
+  const fetcher = { open: async () => {}, close: async () => {}, get: async () => { throw new Error(n++ % 2 ? 'HTTP 404' : 'Timeout 45000ms exceeded'); } };
+  await drain(db, { mode: 'weekly', log: () => {} }, fetcher);
+});
+
+test('a layout change that makes every page unusable ends fetching after 30, and the run still finishes', async () => {
+  const { drain } = await import('../scraper/crawl.ts');
+  const db = openDb();
+  db.exec('DELETE FROM pages');
+  for (let i = 0; i < 60; i++) enqueue(db, `http://ufcstats.com/fight-details/${i.toString(16).padStart(16, '7')}`);
+  let calls = 0;
+  const fetcher = { open: async () => {}, close: async () => {}, get: async () => { calls++; return '<html><body><div class="b-foot"></div></body></html>'; } };
+  await drain(db, { mode: 'weekly', log: () => {} }, fetcher);
+  assert.equal(calls, 30);
 });

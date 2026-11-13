@@ -81,7 +81,7 @@ A change to the serving tables ships in this order: `wrangler d1 migrations appl
 
 Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts, and a note when a weekly run stops or fails, go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
 
-Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 unanswered pages in a row (timeouts, 5xx), and doesn't retry harder. Pages ufcstats answers but that can't be used (404s, pages that don't parse) never stop it; 30 of those in a row are kept as failing rather than gone, and retried once a run.
+Data lives in `~/ufc-stats-data` (`UFC_DATA_DIR` to change it). A crawl stops on HTTP 403/429, a browser check that doesn't clear, or 5 unanswered pages in a row (timeouts, 5xx), and doesn't retry harder. Pages ufcstats answers but that can't be used (404s, pages that don't parse) don't count toward that; 30 of those in a row end the fetching with an alert (a layout change, most likely), are kept as failing rather than gone and retried once a run, and the load still runs.
 
 ## License
 

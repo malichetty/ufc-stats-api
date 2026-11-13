@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import zlib from 'node:zlib';
+import { alert } from './alert.ts';
 import { BlockedError, Fetcher } from './browser.ts';
 import { nowIso, tx } from './db.ts';
 import {
@@ -160,12 +161,13 @@ export function ingest(db: DatabaseSync, url: string, html: string, opts: CrawlO
            weight_class, bonuses, method_short, method_detail, round, time)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           -- A card lists fights, but only the fight's own page (which links its event) may move a stored fight.
-           event_id = CASE WHEN fights.page_scraped_at IS NULL THEN excluded.event_id ELSE fights.event_id END,
-           bout_order = excluded.bout_order,
+           event_id = excluded.event_id, bout_order = excluded.bout_order,
            weight_class = excluded.weight_class, bonuses = excluded.bonuses, method_short = excluded.method_short,
            method_detail = excluded.method_detail, round = COALESCE(fights.round, excluded.round),
-           time = COALESCE(fights.time, excluded.time)`,
+           time = COALESCE(fights.time, excluded.time)
+         -- A card lists fights, but only the fight's own page (which links its event) may move a stored fight, and
+         -- another card's listing doesn't touch it at all.
+         WHERE fights.page_scraped_at IS NULL OR fights.event_id = excluded.event_id`,
       ).run(f.id, e.id, f.bout_order, f.fighter1_id, f.fighter2_id, f.fighter1_name, f.fighter2_name,
         f.weight_class, JSON.stringify(f.bonuses), f.method, f.method_detail, f.round, f.time);
       // Fetch the fight page again while it has no result (the event page shows none yet, or we stored the fight page
@@ -288,9 +290,9 @@ export async function drain(
   };
   // No answer (timeout, 5xx, challenge) on 5 first tries in a row stops the run: the sign ufcstats stopped answering.
   // Retries of pages that failed before are that page's problem. An answer we can't use (4xx, a page ingest refuses)
-  // never stops the run, so links a bad page plants can't hold back the load. A 404 is final ('gone'; `pnpm flag`
-  // reopens it), except in a streak of 30 unusable answers in a row: that is ufcstats changing or failing, not those
-  // pages, so the whole streak is kept as 'failed' (one quiet retry each run) and nothing is retried this run.
+  // is usually about that page, so it doesn't count; a 404 is final ('gone'; `pnpm flag` reopens it). But 30 of those
+  // in a row is ufcstats changing or failing (or a bad page's planted links): fetching ends there with an alert, the
+  // streak is kept as 'failed' (one quiet retry each run) rather than gone, and the load still runs.
   const fail = (next: { url: string; attempts: number }, e: unknown, answered: boolean) => {
     const msg = (e as Error).message;
     const attempts = next.attempts + 1;
@@ -299,11 +301,14 @@ export async function drain(
       .run(attempts, String(msg).slice(0, 500), status, next.url);
     log(`error on ${next.url}: ${msg}`);
     if (answered) {
+      failuresInARow = 0; // ufcstats is answering
       unusable.push(next.url);
       if (unusable.length >= MAX_UNUSABLE_IN_A_ROW) {
-        if (unusable.length === MAX_UNUSABLE_IN_A_ROW) log(`${MAX_UNUSABLE_IN_A_ROW} unusable answers in a row; ufcstats may have changed`);
         db.prepare(`UPDATE pages SET status = 'failed', attempts = ? WHERE url IN (SELECT value FROM json_each(?))`)
           .run(MAX_ATTEMPTS, JSON.stringify(unusable));
+        alert('UNUSABLE-ANSWERS', `${MAX_UNUSABLE_IN_A_ROW} pages in a row answered but unusable (last: ${next.url}: ${msg}); ` +
+          'fetching stopped for this run and the load went ahead. ufcstats may have changed its layout or be refusing us.');
+        stopping = true;
       }
       return;
     }
