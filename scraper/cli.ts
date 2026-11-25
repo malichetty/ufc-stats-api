@@ -9,6 +9,7 @@ import { kindOf } from './parse.ts';
 import { sync, type Target } from './sync.ts';
 
 const EXIT_BLOCKED = 2;
+const EXIT_BUSY = 73;
 /** sysexits EX_TEMPFAIL: results not published yet; the retry run picks it up. */
 const EXIT_NOT_YET = 75;
 
@@ -47,7 +48,7 @@ function lock(): () => void {
       try {
         process.kill(pid, 0);
         log(`another run (pid ${pid}) is in progress; exiting`);
-        process.exit(EXIT_NOT_YET);
+        process.exit(EXIT_BUSY);
       } catch { /* stale lock */ }
     }
   } catch { /* no lock */ }

@@ -45,3 +45,4 @@ node_modules/
 worker/.wrangler/
 worker/.dev.vars
 .probe/
+worker/wrangler.production.jsonc

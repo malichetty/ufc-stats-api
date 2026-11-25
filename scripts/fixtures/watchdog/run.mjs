@@ -9,6 +9,9 @@ fs.mkdirSync(path.join(home, 'Library/Preferences/.wrangler/config'), { recursiv
 fs.writeFileSync(path.join(home, 'Library/Preferences/.wrangler/config/default.toml'), 'oauth_token = "dummy"\n');
 process.env.HOME = home;
 process.env.UFC_DATA_DIR = path.join(home, 'data');
+fs.mkdirSync(process.env.UFC_DATA_DIR, { recursive: true });
+fs.writeFileSync(path.join(process.env.UFC_DATA_DIR, 'wrangler.jsonc'),
+  JSON.stringify({ database_id: '11111111-1111-4111-8111-111111111111' }));
 const HOST = 'ufcapi.aristotle.me';
 const cf = globalThis.__cf = { domains: new Map([['d0', { id: 'd0', hostname: HOST, service: 'ufc-stats-api' }]]), kill: false, requests: 0, n: 0 };
 globalThis.fetch = async (url, init = {}) => {

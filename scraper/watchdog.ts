@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { alert } from './alert.ts';
 import { DATA_DIR } from './db.ts';
-import { accountId, D1_NAME, REPO_ROOT, runWrangler } from './sync.ts';
+import { accountId, D1_NAME, remoteWranglerConfig, runWrangler } from './sync.ts';
 
 const HOSTNAME = 'ufcapi.aristotle.me';
 const SCRIPT = 'ufc-stats-api';
@@ -79,10 +79,9 @@ async function usage(tok: string, date: string, databaseId: string) {
 }
 
 function databaseId(): string {
-  // REPO_ROOT decodes the module URL; URL.pathname would keep a space in the folder name as %20.
-  const cfg = fs.readFileSync(path.join(REPO_ROOT, 'worker', 'wrangler.jsonc'), 'utf8');
+  const cfg = fs.readFileSync(remoteWranglerConfig(), 'utf8');
   const m = cfg.match(/"database_id":\s*"([^"]+)"/);
-  if (!m || /^0{8}-/.test(m[1])) throw new Error('worker/wrangler.jsonc has no real database_id yet (not deployed)');
+  if (!m || /^0{8}-/.test(m[1])) throw new Error('Remote Worker config has no production database_id');
   return m[1];
 }
 

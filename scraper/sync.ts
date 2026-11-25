@@ -12,6 +12,15 @@ export type Target = 'local' | 'remote';
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKER_DIR = path.join(REPO_ROOT, 'worker');
 export const D1_NAME = 'ufc-stats';
+
+export function remoteWranglerConfig(): string {
+  const production = path.join(WORKER_DIR, 'wrangler.production.jsonc');
+  if (!fs.existsSync(production)) {
+    throw new Error('Missing worker/wrangler.production.jsonc. Copy worker/wrangler.jsonc and set your remote D1 database ID in the copy.');
+  }
+  return production;
+}
+
 /** The Cloudflare account, from the environment so it stays out of this public repo. */
 export function accountId(): string {
   const id = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -96,6 +105,17 @@ export interface SyncResult {
   file: string | null;
 }
 
+function localDatabaseHasData(): boolean {
+  const [result] = JSON.parse(runWrangler([
+    'd1', 'execute', D1_NAME, '--local', '--json',
+    '--command', "SELECT 1 FROM meta WHERE key = 'data_version'",
+  ])) as { success?: boolean; results?: unknown[] }[];
+  if (result?.success !== true || !Array.isArray(result.results)) {
+    throw new Error('Could not check the local D1 data version');
+  }
+  return result.results.length > 0;
+}
+
 /**
  * Load what changed since the last load into D1, as one SQL file run by `wrangler d1 execute`.
  * Nothing changed means nothing is written and the data version stays the same.
@@ -104,12 +124,15 @@ export function sync(
   db: DatabaseSync, target: Target, opts: { log?: (m: string) => void; dryRun?: boolean; allowDeletes?: boolean } = {},
 ): SyncResult {
   const log = opts.log ?? console.log;
+  if (target === 'remote' && !opts.dryRun) remoteWranglerConfig();
   const live = new Set((db.prepare(`SELECT id FROM served WHERE target = ? AND tbl = 'events'`).all(target) as { id: string }[]).map((r) => r.id));
   const built = build(db, live);
   const served = new Map<string, string>();
   for (const r of db.prepare('SELECT tbl, id, hash FROM served WHERE target = ?').all(target) as { tbl: string; id: string; hash: string }[]) {
     served.set(`${r.tbl}:${r.id}`, r.hash);
   }
+  // The scraper can outlive the local D1 binding or persistence directory.
+  const reseedLocal = target === 'local' && !opts.dryRun && served.size > 0 && !localDatabaseHasData();
 
   const statements: string[] = [];
   const newHashes: { tbl: string; id: string; hash: string }[] = [];
@@ -126,7 +149,7 @@ export function sync(
       const id = keyOf(tbl, r);
       present.add(id);
       const h = hash(r);
-      if (served.get(`${tbl}:${id}`) !== h) {
+      if (reseedLocal || served.get(`${tbl}:${id}`) !== h) {
         todo.push(r);
         newHashes.push({ tbl, id, hash: h });
       }
@@ -186,7 +209,8 @@ export function sync(
 
 export function runWrangler(args: string[], input?: string): string {
   const bin = path.join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
-  return execFileSync(bin, args, {
+  const command = args.includes('--remote') ? [...args, '--config', remoteWranglerConfig()] : args;
+  return execFileSync(bin, command, {
     cwd: WORKER_DIR,
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId(), WRANGLER_SEND_METRICS: 'false' },
     encoding: 'utf8',
