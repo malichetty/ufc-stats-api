@@ -295,6 +295,18 @@ test('the watchdog keeps the API paused when the domain is re-attached the same 
   assert.equal(ticks[1].kill, true, 'the D1 kill flag backs the pause');
 });
 
+test('another crawl holding the lock has a different exit from unpublished results', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ufc-crawl-busy-'));
+  fs.writeFileSync(path.join(home, '.ufc-stats-api.lock'), String(process.pid));
+  const run = spawnSync(process.execPath, ['--no-warnings', 'scraper/cli.ts', 'weekly'], {
+    env: { ...process.env, HOME: home, UFC_DATA_DIR: home, UFC_D1_TARGET: 'none' },
+    encoding: 'utf8',
+  });
+  assert.match(run.stdout, /another run/);
+  assert.equal(run.status, 73);
+});
+
 test('one event page cannot move or change a published fight of another event, so sync keeps it', async () => {
   const { sync } = await import('../scraper/sync.ts');
   const db = openDb();

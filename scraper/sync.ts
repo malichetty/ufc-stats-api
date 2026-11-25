@@ -12,6 +12,11 @@ export type Target = 'local' | 'remote';
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKER_DIR = path.join(REPO_ROOT, 'worker');
 export const D1_NAME = 'ufc-stats';
+
+export function remoteWranglerConfig(): string {
+  const production = path.join(WORKER_DIR, 'wrangler.production.jsonc');
+  return fs.existsSync(production) ? production : path.join(WORKER_DIR, 'wrangler.jsonc');
+}
 /** The Cloudflare account, from the environment so it stays out of this public repo. */
 export function accountId(): string {
   const id = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -186,7 +191,8 @@ export function sync(
 
 export function runWrangler(args: string[], input?: string): string {
   const bin = path.join(REPO_ROOT, 'node_modules', '.bin', 'wrangler');
-  return execFileSync(bin, args, {
+  const command = args.includes('--remote') ? [...args, '--config', remoteWranglerConfig()] : args;
+  return execFileSync(bin, command, {
     cwd: WORKER_DIR,
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId(), WRANGLER_SEND_METRICS: 'false' },
     encoding: 'utf8',

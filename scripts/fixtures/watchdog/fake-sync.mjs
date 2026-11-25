@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const D1_NAME = 'ufc-stats';
+export const remoteWranglerConfig = () => path.join(process.env.UFC_DATA_DIR, 'wrangler.jsonc');
 export const accountId = () => 'acct-test';
 export function runWrangler(args) {
   const sql = args.join(' ');

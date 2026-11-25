@@ -11,7 +11,7 @@ const EDGE_TTL = 7 * 24 * 3600;
 const CLIENT_TTL = 300;
 
 const META_KEYS = [
-  'data_version', 'kill', 'count_events', 'count_fights', 'count_fighters', 'count_events_all', 'count_fights_all',
+  'data_version', 'kill', 'watchdog_kill', 'count_events', 'count_fights', 'count_fighters', 'count_events_all', 'count_fights_all',
   'methods', 'overview', 'last_updated',
 ];
 let metaMemo: { at: number; meta: Meta } | null = null;
@@ -45,7 +45,7 @@ async function loadMeta(env: Env, ctx: ExecutionContext, origin: string): Promis
   const r = raw ?? {};
   const meta: Meta = {
     version: r.data_version ?? '0',
-    kill: r.kill === '1',
+    kill: r.kill === '1' || r.watchdog_kill === '1',
     counts: {
       events: Number(r.count_events ?? 0),
       fights: Number(r.count_fights ?? 0),
