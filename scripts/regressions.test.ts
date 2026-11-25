@@ -307,6 +307,68 @@ test('another crawl holding the lock has a different exit from unpublished resul
   assert.equal(run.status, 73);
 });
 
+test('sync reseeds a new local D1 binding even when a previous database is up to date', async t => {
+  const { default: childProcess } = await import('node:child_process');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const { DatabaseSync } = await import('node:sqlite');
+  const { sync } = await import('../scraper/sync.ts');
+  const migrationDir = 'worker/migrations';
+  const newD1 = () => {
+    const database = new DatabaseSync(':memory:');
+    for (const name of fs.readdirSync(migrationDir).sort()) {
+      database.exec(fs.readFileSync(path.join(migrationDir, name), 'utf8'));
+    }
+    return database;
+  };
+  const oldD1 = newD1();
+  const replacement = newD1();
+  let target = oldD1;
+  const wrangler = t.mock.method(childProcess, 'execFileSync', (_bin: string, args: string[]) => {
+    assert.ok(args.includes('--local'));
+    const file = args.indexOf('--file');
+    if (file !== -1) {
+      target.exec(fs.readFileSync(args[file + 1], 'utf8'));
+      return '';
+    }
+    const sql = args[args.indexOf('--command') + 1];
+    return JSON.stringify([{ success: true, results: target.prepare(sql).all() }]);
+  });
+  syncBuiltinESMExports();
+  const previousAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+  process.env.CLOUDFLARE_ACCOUNT_ID = 'local-test-account';
+  try {
+    const db = openDb(path.join(process.env.UFC_DATA_DIR!, 'local-binding-reseed'));
+    const opts = { mode: 'weekly' as const };
+    const load = () => sync(db, 'local', { log: () => {} });
+    ingest(db, `http://ufcstats.com/event-details/${EVENT}`,
+      eventPage('win').replace('November 07, 2026', 'November 07, 2020'), opts);
+    ingest(db, `http://ufcstats.com/fight-details/${FIGHT}`, fightPage('W', 'L'), opts);
+    assert.equal(load().changed.events, 1);
+    target = replacement;
+    assert.equal(load().changed.events, 1);
+    assert.ok(replacement.prepare('SELECT id FROM events WHERE id = ?').get(EVENT));
+    assert.equal(load().file, null);
+    db.close();
+  } finally {
+    if (previousAccount === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = previousAccount;
+    wrangler.mock.restore();
+    syncBuiltinESMExports();
+    oldD1.close();
+    replacement.close();
+  }
+});
+
+test('remote operations require the production Wrangler config', async t => {
+  const { remoteWranglerConfig } = await import('../scraper/sync.ts');
+  const existsSync = fs.existsSync;
+  t.mock.method(fs, 'existsSync', file => {
+    if (String(file).endsWith('wrangler.production.jsonc')) return false;
+    return existsSync(file);
+  });
+  assert.throws(remoteWranglerConfig, /wrangler\.production\.jsonc/);
+});
+
 test('one event page cannot move or change a published fight of another event, so sync keeps it', async () => {
   const { sync } = await import('../scraper/sync.ts');
   const db = openDb();
