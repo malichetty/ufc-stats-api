@@ -79,6 +79,8 @@ pnpm e2e                          # end-to-end checks against `pnpm dev`
 
 For a hosted deployment, copy `worker/wrangler.jsonc` to the ignored `worker/wrangler.production.jsonc`. Set your D1 database ID and route in that copy. Pass it with `--config` when running Wrangler for migrations or deployment. The scraper and watchdog pick it up for remote database operations.
 
+If you used an earlier release locally, apply the D1 migrations with `--local` and run `pnpm sync --target local` to populate the new local binding from your existing scrape.
+
 Apply new serving-table migrations before deploying the Worker, then run `pnpm sync --target remote`. If a migration removes a table the live Worker still reads, deploy the Worker that drops that dependency first.
 
 Set `CLOUDFLARE_ACCOUNT_ID` (the account that holds the Worker and D1) before syncing or installing the launchd jobs; `install-launchd` copies it into the jobs. Watchdog alerts, and a note when a weekly run stops or fails, go to `~/ufc-stats-data/alerts`, or to `UFC_ALERT_DIR` if set when installing.
